@@ -1,0 +1,156 @@
+# ============================================================
+# beat2body — .gitignore
+# ============================================================
+
+# ---------- OS ----------
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# ---------- Editors / IDEs ----------
+.vscode/
+!.vscode/extensions.json
+!.vscode/settings.json.example
+.idea/
+*.iml
+*.ipr
+*.iws
+out/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+
+# ---------- Python ----------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+MANIFEST
+*.manifest
+*.spec
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+.python-version
+.conda/
+
+# Testing / coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+.hypothesis/
+
+# Type checkers / linters
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.ruff_cache/
+.pyre/
+.pytype/
+
+# ---------- Jupyter ----------
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# ---------- Environment / secrets ----------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+credentials.json
+wandb/
+# keep wandb config if you want, otherwise ignored above
+!wandb/settings
+
+# ---------- ML / training artifacts ----------
+checkpoints/
+ckpt/
+runs/
+logs/
+lightning_logs/
+outputs/
+wandb/
+mlruns/
+*.ckpt
+*.pt
+*.pth
+*.onnx
+*.h5
+*.pb
+*.safetensors
+*.bin
+
+# ---------- Project data (large binaries) ----------
+# Source videos — never commit
+2d/raw_video/**/*.mp4
+2d/raw_video/**/*.mov
+2d/raw_video/**/*.avi
+2d/raw_video/**/*.mkv
+2d/raw_video/**/*.webm
+
+# Extracted frames — regenerable
+2d/frames/**/*.jpg
+2d/frames/**/*.png
+
+# Extracted audio — regenerable
+2d/audio/**/*.wav
+2d/audio/**/*.mp3
+2d/audio/**/*.flac
+
+# Processed keypoints / features — regenerate from video
+2d/keypoints/**/*.npz
+2d/keypoints/**/*.npy
+2d/keypoints/**/*.json
+2d/features/**/*.npy
+2d/features/**/*.npz
+2d/features/**/*.pkl
+
+# Sliding-window clips — regenerable
+2d/clips/**/*.npz
+2d/clips/**/*.npy
+
+# Metadata — decide per project: usually keep the *schema*,
+# ignore per-run manifests. Uncomment to ignore:
+# 2d/meta.csv
+
+# ---------- Keep the folder skeleton ----------
+# Empty dirs aren't tracked; these files force the structure.
+# Add a .gitkeep to each data folder so `git clone` reproduces layout.
+!2d/raw_video/**/.gitkeep
+!2d/raw_video/**/.gitkeep
+!2d/frames/.gitkeep
+!2d/keypoints/**/.gitkeep
+!2d/audio/**/.gitkeep
+!2d/features/**/.gitkeep
+!2d/clips/**/.gitkeep
+
+# ---------- Misc ----------
+*.log
+*.tmp
+*.bak
+*.orig
+*.rej
+.DS_Store
+dir.txt
