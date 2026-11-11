@@ -37,3 +37,14 @@ architecture, training losses, and output format.
 - [ ] 2D baseline model (audio encoder + category embedding + GRU decoder)
 - [ ] 2D training + evaluation (beat alignment, motion diversity)
 - [ ] 3D phase
+
+## Resources
+
+[Data Formats - AIST Dance Video Database (AIST Dance DB)](https://aistdancedb.ongaaccel.jp/data_formats/)
+
+
+### Datasets
+
+SAMBOOM/AISTDance_dwpose
+SAMBOOM/AISTDance_mediapipe
+SAMBOOM/AISTDance_openpose
