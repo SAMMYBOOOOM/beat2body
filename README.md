@@ -14,8 +14,8 @@ training losses, data format and split. The task list is in [NEXT_STEPS.md](NEXT
 ## Setup
 
 ```bash
-pip install -e ".[data]"          # training machine: numpy, scipy, huggingface_hub, opencv
-pip install -e ".[data,audio,dev]"   # + audio features (librosa) and tests
+pip install -e ".[train]"         # training machine: torch, huggingface_hub, opencv
+pip install -e ".[train,audio,dev]"  # + audio features (librosa) and tests
 python -m beat2body --help
 ```
 
@@ -23,16 +23,22 @@ Videos (pose, audio, render) also need `ffmpeg` on the PATH.
 
 ## Data
 
-Processed data is on Hugging Face, one dataset per pose tool, with the same layout as `2d/`:
+Processed data is on Hugging Face, one **private** dataset per pose tool, with the same layout as `2d/`:
 
 | Dataset | Pose tool |
 | --- | --- |
-| [`SAMBOOM/AISTDance_dwpose`](https://huggingface.co/datasets/SAMBOOM/AISTDance_dwpose) | DWPose (used for training) |
-| [`SAMBOOM/AISTDance_openpose`](https://huggingface.co/datasets/SAMBOOM/AISTDance_openpose) | OpenPose |
-| [`SAMBOOM/AISTDance_mediapipe`](https://huggingface.co/datasets/SAMBOOM/AISTDance_mediapipe) | MediaPipe |
+| [`SizheZ03/AISTDance_dwpose`](https://huggingface.co/datasets/SizheZ03/AISTDance_dwpose) | DWPose (used for training) |
+| [`SizheZ03/AISTDance_openpose`](https://huggingface.co/datasets/SizheZ03/AISTDance_openpose) | OpenPose |
+| [`SizheZ03/AISTDance_mediapipe`](https://huggingface.co/datasets/SizheZ03/AISTDance_mediapipe) | MediaPipe |
+
+The account is taken from `--org`, else `BEAT2BODY_HF_ORG`, else the logged-in account
+(`hf auth login` or `HF_TOKEN`); private datasets need a token to download. The original public
+copies (old per-video split) are under `SAMBOOM/`.
 
 ```bash
+export HF_TOKEN=...  BEAT2BODY_HF_ORG=SizheZ03     # e.g. on AWS
 python -m beat2body hf download --tool dwpose      # into 2d/, no videos or GPU needed
+python -m beat2body data --tool dwpose             # check the PyTorch loader
 python -m beat2body clips --tool dwpose            # optional: rebuild clips / split locally
 python -m beat2body render --video-id gLH_sFM_c01_d16_mLH0_ch01
 ```
@@ -55,6 +61,7 @@ research only and must be cited (Tsuchida et al., ISMIR 2019); see its
 │   ├── aist.py             # AIST naming: genres, dancers, songs
 │   ├── skeleton.py         # COCO-17 joints, tool joint mappings
 │   ├── video.py            # fixed-fps frame reading, drawing, mp4 writing
+│   ├── data.py             # PyTorch Dataset / DataLoader for training
 │   ├── pose/               # 4.3 pose tools: dwpose.py, mediapipe.py, openpose.py
 │   ├── prep/               # 4.2/4.4-4.7: frames, clean, audio, clips (+ split), all, hf
 │   └── render.py           # stick-figure videos of real or generated keypoints
@@ -75,7 +82,8 @@ Run `ruff check beat2body` and `pytest` before committing.
 ## Status
 - [x] 2D data pipeline (pose → cleaning → audio features → clips), 10 genres × 3 pose tools, on Hugging Face
 - [x] Code organized as the `beat2body` package; held-out-song test split
-- [ ] Publish the new split + dataset cards to Hugging Face
+- [x] New split + dataset cards published (private, SizheZ03)
+- [x] PyTorch data loader (`beat2body.data`)
 - [ ] 2D baseline model (audio encoder + category embedding + GRU decoder)
 - [ ] 2D training (AWS) + evaluation (beat alignment, genre consistency, diversity)
 - [ ] 3D phase

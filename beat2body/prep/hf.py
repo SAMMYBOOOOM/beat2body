@@ -12,7 +12,11 @@ The datasets have the same layout as the data root, under "2d/":
     python -m beat2body hf card --tool dwpose                              # write the card to review it
     python -m beat2body hf upload --tool dwpose --prune                    # data + card
 
-Uploading needs a write token (`huggingface-cli login` or HF_TOKEN).
+Account (namespace) of the datasets, first match wins:
+    --org NAME  >  BEAT2BODY_HF_ORG  >  the logged-in account (`hf auth login` or HF_TOKEN)  >  SAMBOOM
+SAMBOOM holds the original public datasets and is only a read-only fallback. `upload` creates
+the dataset in your account if needed, private unless --public. Private datasets need a token
+to download as well (e.g. HF_TOKEN on the training machine).
 """
 import csv
 import glob
@@ -25,12 +29,32 @@ from beat2body import paths
 from beat2body.paths import SPLITS, TOOLS
 
 DOC = __doc__
-DEFAULT_ORG = "SAMBOOM"
+FALLBACK_ORG = "SAMBOOM"  # original public datasets (read-only fallback)
+ORG_ENV = "BEAT2BODY_HF_ORG"
 PARTS = ("keypoints", "features", "clips")
 
 
 def repo_id(org, tool):
     return f"{org}/AISTDance_{tool}"
+
+
+def logged_in_user():
+    """Name of the account of the current token, or None."""
+    try:
+        from huggingface_hub import HfApi, get_token
+        return HfApi().whoami()["name"] if get_token() else None
+    except Exception:  # noqa: BLE001  (offline, invalid token, ...)
+        return None
+
+
+def resolve_org(org=None, for_upload=False):
+    """--org > BEAT2BODY_HF_ORG > logged-in account > SAMBOOM (download only)."""
+    org = org or os.environ.get(ORG_ENV) or logged_in_user()
+    if org:
+        return org
+    if for_upload:
+        sys.exit(f"no Hugging Face account: run `hf auth login` (or set HF_TOKEN), or pass --org / {ORG_ENV}")
+    return FALLBACK_ORG
 
 
 def add_args(p):
@@ -39,7 +63,9 @@ def add_args(p):
         sp = sub.add_parser(name)
         sp.set_defaults(hf_fn=fn)
         sp.add_argument("--tool", nargs="+", choices=TOOLS, default=["dwpose"])
-        sp.add_argument("--org", default=DEFAULT_ORG)
+        sp.add_argument("--org", default=None,
+                        help=f"dataset namespace (default: ${ORG_ENV}, else your logged-in account, "
+                             f"else {FALLBACK_ORG} for downloads)")
         if name != "card":
             sp.add_argument("--parts", nargs="+", choices=PARTS, default=list(PARTS))
         if name == "download":
@@ -50,6 +76,9 @@ def add_args(p):
             sp.add_argument("--min-clips", type=int, default=3000,
                             help="safety check: refuse to upload clips if fewer exist locally")
             sp.add_argument("--message", default=None)
+            sp.add_argument("--public", action="store_true",
+                            help="make a newly created dataset public (default: private); "
+                                 "an existing dataset keeps its visibility")
 
 
 def run(args):
@@ -77,8 +106,9 @@ def patterns(tool, parts):
 
 def download(args):
     from huggingface_hub import snapshot_download
+    org = resolve_org(args.org)
     for tool in args.tool:
-        rid = repo_id(args.org, tool)
+        rid = repo_id(org, tool)
         print(f"[{tool}] downloading {rid} ({', '.join(args.parts)}) into {paths.data_root()}")
         snapshot_download(rid, repo_type="dataset", local_dir=paths.base_dir(),
                           allow_patterns=patterns(tool, args.parts), revision=args.revision)
@@ -119,7 +149,7 @@ def _split_text(info):
     return f"Split by {unit}, stratified per genre."
 
 
-def make_card(tool):
+def make_card(tool, org):
     meta = paths.meta_csv_path(tool)
     if not os.path.exists(meta):
         sys.exit(f"{meta} not found; run `python -m beat2body clips --tool {tool}` (or download the clips) first")
@@ -136,7 +166,7 @@ def make_card(tool):
     window, stride = info.get("window", 240), info.get("stride", 60)
     cats = sorted({r["category"] for r in rows})
     table = "\n".join(f"| {s} | {clips.get(s, 0)} | {videos[s]} | {songs[s]} |" for s in SPLITS)
-    others = ", ".join(f"[{t}](https://huggingface.co/datasets/{repo_id(DEFAULT_ORG, t)})" for t in TOOLS if t != tool)
+    others = ", ".join(f"[{t}](https://huggingface.co/datasets/{repo_id(org, t)})" for t in TOOLS if t != tool)
     return f"""---
 pretty_name: AIST Dance 2D keypoints ({tool})
 license: other
@@ -201,7 +231,7 @@ Video ids follow AIST naming: `gLH_sFM_c01_d16_mLH0_ch01` = genre `LH`, dancer `
 ```python
 from huggingface_hub import snapshot_download
 import pandas as pd, numpy as np
-root = snapshot_download("{repo_id(DEFAULT_ORG, tool)}", repo_type="dataset")
+root = snapshot_download("{repo_id(org, tool)}", repo_type="dataset")
 meta = pd.read_csv(f"{{root}}/2d/clips/{tool}/meta.csv")
 clip = np.load(f"{{root}}/" + meta.clip_path[0])
 ```
@@ -226,27 +256,31 @@ def card_path(tool):
 
 
 def card(args):
+    org = resolve_org(args.org)
     for tool in args.tool:
         os.makedirs(os.path.dirname(card_path(tool)), exist_ok=True)
         with open(card_path(tool), "w") as f:
-            f.write(make_card(tool))
+            f.write(make_card(tool, org))
         print(f"[{tool}] wrote {paths.rel(card_path(tool))}")
 
 
 def upload(args):
     from huggingface_hub import CommitOperationAdd, CommitOperationDelete, HfApi
     api = HfApi(token=os.environ.get("HF_TOKEN"))
+    org = resolve_org(args.org, for_upload=True)
     for tool in args.tool:
-        rid = repo_id(args.org, tool)
+        rid = repo_id(org, tool)
         pats = patterns(tool, args.parts)
         n_clips = len(glob.glob(os.path.join(paths.tool_clips_dir(tool), "*", "*.npz")))
         if "clips" in args.parts and n_clips < args.min_clips:
             sys.exit(f"[{tool}] only {n_clips} local clips (< --min-clips {args.min_clips}); refusing to upload")
-        print(f"[{tool}] uploading to {rid}: {pats}")
+        url = api.create_repo(rid, repo_type="dataset", private=not args.public, exist_ok=True)
+        private = api.repo_info(rid, repo_type="dataset").private
+        print(f"[{tool}] uploading to {url} ({'private' if private else 'public'}): {pats}")
         api.upload_folder(repo_id=rid, repo_type="dataset", folder_path=paths.base_dir(), allow_patterns=pats,
                           commit_message=args.message or f"Update {tool} data ({', '.join(args.parts)})")
         api.create_commit(rid, repo_type="dataset", commit_message="Update dataset card",
-                          operations=[CommitOperationAdd("README.md", make_card(tool).encode())])
+                          operations=[CommitOperationAdd("README.md", make_card(tool, org).encode())])
         if args.prune:
             prefixes = tuple(p[:-2] for p in pats if p.endswith("/**"))
             remote = api.list_repo_files(rid, repo_type="dataset")

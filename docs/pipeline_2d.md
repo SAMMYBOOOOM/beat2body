@@ -88,7 +88,7 @@ from google.colab import drive; drive.mount("/content/drive")
 !bash scripts/colab_build_openpose.sh       # ~25 min the first time
 !python -m beat2body pose openpose --backend official --backup-dir /content/drive/MyDrive/beat2body_pose_raw
 !python -m beat2body all --tools dwpose mediapipe openpose --delete-raw
-!HF_TOKEN=... python -m beat2body hf upload --tool dwpose mediapipe openpose --prune
+!HF_TOKEN=... python -m beat2body hf upload --tool dwpose mediapipe openpose --prune   # to your account
 ```
 
 `--backup-dir` copies every finished video to Google Drive and restores it after a disconnect, so a rerun continues where it stopped. (MediaPipe runs on the CPU on Colab because its GPU path needs OpenGL.)
@@ -206,13 +206,23 @@ tests/                     # pytest
 
 **Hugging Face.** `keypoints/<tool>/`, `features/`, `clips/<tool>/` and `categories.json` are published as one dataset per tool, with the same paths under `2d/`:
 
-| Dataset | Tool |
+| Dataset (private) | Tool |
 | --- | --- |
-| [`SAMBOOM/AISTDance_dwpose`](https://huggingface.co/datasets/SAMBOOM/AISTDance_dwpose) | DWPose (recommended for training: 99.7% of joints observed) |
-| [`SAMBOOM/AISTDance_openpose`](https://huggingface.co/datasets/SAMBOOM/AISTDance_openpose) | OpenPose (official build) |
-| [`SAMBOOM/AISTDance_mediapipe`](https://huggingface.co/datasets/SAMBOOM/AISTDance_mediapipe) | MediaPipe |
+| [`SizheZ03/AISTDance_dwpose`](https://huggingface.co/datasets/SizheZ03/AISTDance_dwpose) | DWPose (recommended for training: 99.7% of joints observed) |
+| [`SizheZ03/AISTDance_openpose`](https://huggingface.co/datasets/SizheZ03/AISTDance_openpose) | OpenPose (official build) |
+| [`SizheZ03/AISTDance_mediapipe`](https://huggingface.co/datasets/SizheZ03/AISTDance_mediapipe) | MediaPipe |
 
-`hf download` puts a dataset in place; `hf card` writes the dataset card to `2d/hf_cards/` for review; `hf upload --prune` publishes local results with the card (source, AIST terms and citation, file format, split).
+The account comes from `--org`, `BEAT2BODY_HF_ORG` or the logged-in account (`hf auth login` / `HF_TOKEN`);
+`hf upload` creates missing datasets as private (`--public` to change). `SAMBOOM/AISTDance_*` are the
+original public copies with the old per-video split.
+
+`hf download` puts a dataset in place (`data --download` does the same when `meta.csv` is missing); `hf card` writes the dataset card to `2d/hf_cards/` for review; `hf upload --prune` publishes local results with the card (source, AIST terms and citation, file format, split).
+
+**Training data loader.** `beat2body.data.DanceClips` / `make_loader(tool, split, batch_size, seq_len)`
+give dicts of `keypoints (L,17,2)`, `valid (L,17)`, `audio (L,65)` (mel + onset, normalized with
+train-split statistics cached in `clips/<tool>/audio_stats.json`), `beats (L,)` 0/1 mask and `category`.
+Train items get a random crop and a left/right flip. Everything is in memory: use `num_workers=0`.
+`python -m beat2body data --tool dwpose` checks shapes, NaNs, statistics and speed.
 
 **Rendering.** `python -m beat2body render --video-id <id> --overlay` writes a stick-figure video (beats flash the panel border, audio included); `--keypoints file.npy` adds a panel for a generated `(T, 17, 2)` sequence.
 

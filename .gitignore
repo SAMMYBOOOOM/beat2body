@@ -132,6 +132,7 @@ mlruns/
 2d/clips/**/*.npy
 2d/clips/*/meta.csv
 2d/clips/*/split.json
+2d/clips/*/audio_stats.json
 
 # Dataset cards (python -m beat2body hf card) and rendered videos
 2d/hf_cards/

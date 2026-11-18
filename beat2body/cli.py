@@ -9,6 +9,8 @@ Data preparation (README 4.2-4.7), in order:
     frames        4.2 optional JPEG dump
 Data on Hugging Face:
     hf download | card | upload
+Training (needs torch):
+    data          check the PyTorch data loader (shapes, NaNs, audio stats, speed)
 Inspection:
     render        stick-figure video of real or generated keypoints
 
@@ -28,8 +30,14 @@ def _commands():
     import beat2body.pose as pose_pkg
     from beat2body import render
     from beat2body.prep import audio, clean, clips, frames, hf, run_all
-    return {"clean": clean, "audio": audio, "clips": clips, "all": run_all, "frames": frames,
-            "hf": hf, "render": render}, pose_pkg
+    commands = {"clean": clean, "audio": audio, "clips": clips, "all": run_all, "frames": frames,
+                "hf": hf, "render": render}
+    try:  # training commands need torch (pip install -e ".[train]")
+        from beat2body import data
+        commands["data"] = data
+    except ImportError:
+        pass
+    return commands, pose_pkg
 
 
 def build_parser():

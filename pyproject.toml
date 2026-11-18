@@ -13,6 +13,8 @@ dependencies = ["numpy", "scipy"]
 [project.optional-dependencies]
 # training machine: download the processed data from Hugging Face, render results
 data = ["huggingface_hub", "opencv-python-headless"]
+# training (PyTorch data loader, model)
+train = ["torch", "huggingface_hub", "opencv-python-headless"]
 # 4.5 audio features
 audio = ["librosa"]
 # 4.3 pose tools (DWPose also needs: pip install --no-deps easy-dwpose)

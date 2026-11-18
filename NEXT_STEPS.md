@@ -52,7 +52,7 @@ Download one tool with:
 
 ```python
 from huggingface_hub import snapshot_download
-root = snapshot_download("SAMBOOM/AISTDance_dwpose", repo_type="dataset")
+root = snapshot_download("SizheZ03/AISTDance_dwpose", repo_type="dataset")  # private: needs HF_TOKEN
 ```
 
 ### 1.2 Pose-tool comparison (computed on all 210 videos)
@@ -106,21 +106,20 @@ run `ruff check beat2body` and `pytest`.
 - [x] Held-out-song test split (`--test-songs`, `--by`, `--val-ratio`), recorded in `split.json`.
 - [x] Repo reorganized into the `beat2body` package, `pyproject.toml`, `tests/`, `docs/`.
 - [x] Renderer: `python -m beat2body render` (was Task 5).
-- [ ] **Publish to HF:** review `python -m beat2body hf card --tool dwpose mediapipe openpose`
-  (writes `2d/hf_cards/`), then `python -m beat2body hf upload --tool dwpose mediapipe openpose --prune`.
-  This replaces the clips with the new split and adds the cards. Needs a write token for `SAMBOOM`.
-  Decide whether the datasets stay public or become gated.
+- [x] **Published to HF** (2026-11-18) as private datasets in the user's own account:
+  `SizheZ03/AISTDance_{dwpose,mediapipe,openpose}` with the new split and dataset cards.
+  `SAMBOOM/AISTDance_*` (public, old split, no card) were left untouched.
 
-### Task 2 — Data loading (`beat2body/data.py`, new)
+### Task 2 — Data loading ✅ (`beat2body/data.py`)
 
-- [ ] **Write `DanceClips(root, tool="dwpose", split="train")`.** It reads `clips/<tool>/meta.csv`
-  and returns a dict with these fields:
-  `keypoints (W,17,2)`, `valid (W,17)`, `mel (W,64)`, `onset (W,)`, `beats` (padded, plus a
-  length), and `category_index`.
-- [ ] **Normalize mel per channel.** Compute the mean and std on the **train split only** and save
-  them to `mel_stats.json`.
-- [ ] **Augment training data with a horizontal flip.** Negate x and swap the left/right COCO joints.
-- [ ] *Check:* one batch loads, the shapes match, and no NaNs are present.
+- [x] `DanceClips(tool, split, seq_len)` / `make_loader(...)`: `keypoints (L,17,2)`, `valid (L,17)`,
+  `audio (L,65)` = mel + onset, `beats (L,)` 0/1 mask (instead of padded indices), `category`, `video_id`, `start`.
+- [x] Audio normalized per channel with **train-split** stats, cached in `clips/<tool>/audio_stats.json` with a
+  fingerprint of the train videos (recomputed after a re-split). Save them in the model checkpoint.
+- [x] Train augmentation: random temporal crop (`seq_len` < 240) and left/right flip (x negated, joints swapped).
+- [x] `ensure_data(tool)` / `data --download` fetch the dataset on a fresh machine (needs `HF_TOKEN`).
+- [x] Check: `python -m beat2body data --tool dwpose` → all splits load, no NaNs, 10 genres, train audio
+  mean 0 / std 1; 2155 train clips in memory, 0.15 s per epoch with `num_workers=0`. Tests in `tests/test_data.py`.
 
 ### Task 3 — Baseline model and training on AWS (`beat2body/model.py`, `beat2body/train.py`, new)
 

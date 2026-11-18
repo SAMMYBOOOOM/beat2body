@@ -110,3 +110,8 @@ def meta_csv_path(tool):
 
 def split_json_path(tool):
     return _d("clips", tool, "split.json")
+
+
+def audio_stats_path(tool):
+    """Per-channel audio normalization computed on the train split (beat2body.data)."""
+    return _d("clips", tool, "audio_stats.json")
