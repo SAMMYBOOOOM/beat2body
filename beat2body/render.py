@@ -115,8 +115,9 @@ def run(args):
     frames = None
     ov_w = 0
     if args.overlay:
-        fps_frames = iter_frames(raw_video, DEFAULT_FPS)
-        frames = (fr for i, fr in enumerate(fps_frames) if i >= start)
+        frames = iter_frames(raw_video, DEFAULT_FPS)
+        for _ in range(start):
+            next(frames, None)
         ov_w = int(round(gt["width"] * args.size / gt["height"])) // 2 * 2
     width = ov_w + args.size * len(panels)
     name = args.video_id or titles[0]
@@ -132,9 +133,12 @@ def run(args):
                 fr = next(frames, None)
                 if fr is None:
                     break
-                px = gt["keypoints"][t] * float(gt["scale"]) + gt["pelvis"][t]
-                fr = draw_skeleton(fr.copy(), px, color=PANEL_COLORS[0])
+                # keypoints are in the pixel space the pose tool ran at (it may have used --height)
+                px = (gt["keypoints"][t] * float(gt["scale"]) + gt["pelvis"][t]) * (fr.shape[1] / float(gt["width"]))
+                fr = draw_skeleton(fr.copy(), px, color=PANEL_COLORS[0], thickness=max(3, fr.shape[0] // 200))
                 row.append(cv2.resize(fr, (ov_w, args.size), interpolation=cv2.INTER_AREA))
             row += [p.draw(s[t], t in beat_frames) for p, s in zip(panels, seqs)]
             w.write(np.concatenate(row, axis=1))
+    if frames is not None:
+        frames.close()
     print(f"wrote {out} ({stop - start} frames, {len(panels)} panel(s){', overlay' if frames is not None else ''})")

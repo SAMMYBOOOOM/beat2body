@@ -56,6 +56,8 @@ def iter_frames(path, fps=DEFAULT_FPS, height=None):
                 break
             yield np.frombuffer(buf, np.uint8).reshape(h, w, 3)
     finally:
+        if proc.poll() is None:   # stopped early: end ffmpeg before closing its pipe
+            proc.kill()
         proc.stdout.close()
         proc.wait()
 
