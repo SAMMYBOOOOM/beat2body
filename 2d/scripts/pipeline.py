@@ -17,6 +17,7 @@ import glob
 import json
 import os
 import random
+import re
 import subprocess
 import sys
 from collections import defaultdict
@@ -35,10 +36,10 @@ KEYPOINTS_DIR = os.path.join(ROOT_2D, "keypoints")
 AUDIO_DIR = os.path.join(ROOT_2D, "audio")
 FEATURES_DIR = os.path.join(ROOT_2D, "features")
 CLIPS_DIR = os.path.join(ROOT_2D, "clips")
-META_CSV = os.path.join(ROOT_2D, "meta.csv")
 CATEGORIES_JSON = os.path.join(ROOT_2D, "categories.json")
 
 VIDEO_EXTS = (".mp4", ".mov", ".avi", ".mkv", ".webm")
+TOOLS = ["dwpose", "mediapipe", "openpose"]
 DEFAULT_FPS = 30
 
 # ---------------------------------------------------------------------------
@@ -106,6 +107,12 @@ def dancer_id(video_id):
     return None
 
 
+def music_id(video_id):
+    """AIST file names carry the song as 'm' + genre code + digit (e.g. ..._mLH0_ch01 -> mLH0)."""
+    m = re.search(r"_(m[A-Z]{2}\d)_", video_id)
+    return m.group(1) if m else None
+
+
 def write_categories_json(categories, path=CATEGORIES_JSON):
     """Fixed name -> index mapping used for the category embedding."""
     mapping = {c: i for i, c in enumerate(sorted(categories))}
@@ -169,9 +176,22 @@ def feature_path(kind, video_id):
     return os.path.join(FEATURES_DIR, kind, video_id + ".npy")
 
 
-def clean_keypoint_path(category, video_id):
-    """Cleaned keypoints used for training (4.4): 2d/keypoints/<category>/<video_id>.npz"""
-    return os.path.join(KEYPOINTS_DIR, category, video_id + ".npz")
+def clean_keypoint_path(tool, category, video_id):
+    """Cleaned keypoints used for training (4.4): 2d/keypoints/<tool>/<category>/<video_id>.npz"""
+    return os.path.join(KEYPOINTS_DIR, tool, category, video_id + ".npz")
+
+
+def normalization_path(tool):
+    return os.path.join(KEYPOINTS_DIR, tool, "normalization.json")
+
+
+def tool_clips_dir(tool):
+    """Clips of one tool (4.6): 2d/clips/<tool>/<split>/*.npz, plus meta.csv and split.json."""
+    return os.path.join(CLIPS_DIR, tool)
+
+
+def meta_csv_path(tool):
+    return os.path.join(tool_clips_dir(tool), "meta.csv")
 
 
 def save_raw_keypoints(path, keypoints, native, native_names, tool, fps, width, height, seconds):
@@ -348,7 +368,10 @@ CLEAN_DOC = """4.4 Keypoint cleaning, interpolation and normalization.
 Reads the raw output of ONE pose tool (4.3) and writes the cleaned dataset used
 for training:
 
-    2d/keypoints/<category>/<video_id>_<tool>.npz  ->  2d/keypoints/<category>/<video_id>.npz
+    2d/keypoints/<category>/<video_id>_<tool>.npz  ->  2d/keypoints/<tool>/<category>/<video_id>.npz
+
+Each tool gets its own folder, so the three tools can be cleaned side by side
+(this is also the layout of the Hugging Face datasets).
 
 Steps (per joint, along time):
   1. Confidence threshold: joints below --conf become missing (NaN).
@@ -368,7 +391,7 @@ Output npz:
     valid     (T, 17)    bool     False where a value was filled, not observed
     pelvis    (T, 2)              pelvis position in pixels (to undo the centering)
     scale                         torso length in pixels (to undo the scaling)
-The normalization parameters are also written to 2d/keypoints/normalization.json.
+The normalization parameters are also written to 2d/keypoints/<tool>/normalization.json.
 
     python 2d/scripts/pipeline.py clean --tool dwpose
 """
@@ -453,7 +476,7 @@ def torso_lengths(xy):
 
 
 def add_clean_args(p):
-    p.add_argument("--tool", required=True, choices=["dwpose", "mediapipe", "openpose"])
+    p.add_argument("--tool", required=True, choices=TOOLS)
     p.add_argument("--categories", nargs="*", default=None)
     p.add_argument("--conf", type=float, default=None, help="confidence threshold (default: per tool)")
     p.add_argument("--max-gap", type=int, default=5, help="interpolate gaps up to this many frames")
@@ -502,7 +525,7 @@ def run_clean(args):
                 filled[:, j, c] = interpolate_gaps(filled[:, j, c], None)
         filled = np.nan_to_num(filled, nan=0.0)                  # joints never observed
 
-        out = clean_keypoint_path(cat, vid)
+        out = clean_keypoint_path(args.tool, cat, vid)
         os.makedirs(os.path.dirname(out), exist_ok=True)
         np.savez_compressed(out, keypoints=filled.astype(np.float32), valid=valid,
                             pelvis=pelvis.astype(np.float32), scale=scale, fps=raw["fps"],
@@ -515,7 +538,7 @@ def run_clean(args):
                   outlier_factor=args.outlier_factor, savgol_window=args.sg_window, savgol_order=2,
                   scale_px=scale, origin="mid_hip", fps=float(cleaned[files[0]][1]["fps"]),
                   joint_names=COCO17_NAMES)
-    with open(os.path.join(KEYPOINTS_DIR, "normalization.json"), "w") as fh:
+    with open(normalization_path(args.tool), "w") as fh:
         json.dump(params, fh, indent=2)
 
 
@@ -595,33 +618,46 @@ def run_audio(args):
 # ===========================================================================
 CLIPS_DOC = """4.6 Alignment + 4.7 Dataset split: sliding-window clips and meta.csv.
 
-Split (4.7): by video, not by clip, stratified per category (default 70 / 15 / 15,
-so 21 videos per category -> 15 / 3 / 3). With --by dancer, all videos of one
-dancer go to the same split (AIST has 3 dancers per genre -> one dancer per split).
-The split is fixed by --seed and recorded in meta.csv.
+Input: the cleaned keypoints of one tool (4.4) and the audio features (4.5).
+The raw videos are NOT needed, so this step can be rerun on data downloaded
+from Hugging Face (2d/scripts/hf_sync.py download).
+
+Split (4.7): stratified per category, so every split contains every category.
+The unit that is assigned to a split is chosen with --by:
+  music  (default) all videos danced to the same song go to the same split.
+         AIST has 6 songs per genre -> 4 / 1 / 1 songs for train / val / test,
+         so val and test music is never heard in training.
+  video  each video on its own (21 per genre -> 15 / 3 / 3). Songs and dancers
+         are shared between splits.
+  dancer all videos of one dancer together (3 dancers per genre -> 1 / 1 / 1).
+The split is fixed by --seed and recorded in meta.csv and split.json.
 
 Alignment (4.6): motion frame t and audio feature frame t refer to the same time
 (both use the same fixed fps), so both are trimmed to the shorter length, then
 each video is cut into overlapping windows.
 
 Output:
-    2d/clips/<split>/<category>__<video_id>__<start>.npz
+    2d/clips/<tool>/<split>/<category>__<video_id>__<start>.npz
         keypoints (W, 17, 2), valid (W, 17), mel (W, 64), onset (W,),
         beats (beat frame indices inside the window), category, category_index,
         video_id, start, end, fps
-    2d/meta.csv
-        clip_path, audio_feat_path, category, start_frame, end_frame, split, video_id, dancer
+    2d/clips/<tool>/meta.csv
+        clip_path, audio_feat_path, category, start_frame, end_frame, split, video_id, dancer, music
+    2d/clips/<tool>/split.json
+        the options used (--by, --seed, --ratios, --window, ...) and the songs per split
     2d/categories.json
         {"<category>": index}, the fixed mapping for the category embedding
 
 Run after the clean (4.4) and audio (4.5) steps:
 
-    python 2d/scripts/pipeline.py clips --window 240 --stride 60
+    python 2d/scripts/pipeline.py clips --tool dwpose
+    python 2d/scripts/pipeline.py clips --tool dwpose --by video --window 240 --stride 60
 """
 
 
 REPO_ROOT = os.path.dirname(ROOT_2D)
 SPLITS = ["train", "val", "test"]
+SPLIT_KEYS = {"video": lambda v: v, "dancer": dancer_id, "music": music_id}
 
 
 def rel(path):
@@ -640,20 +676,21 @@ def allocate(n, ratios):
 
 
 def split_videos(videos, ratios, by, seed):
-    """videos: [(category, video_id)] -> {(category, video_id): split}"""
+    """videos: [(category, video_id)] -> {(category, video_id): split}
+
+    Videos are grouped by SPLIT_KEYS[by] within each category; whole groups are
+    assigned to splits, so a group never spans two splits."""
+    key = SPLIT_KEYS[by]
     rng = random.Random(seed)
     by_cat = defaultdict(list)
     for cat, vid in videos:
         by_cat[cat].append(vid)
     splits = {}
     for cat, vids in sorted(by_cat.items()):
-        if by == "dancer":
-            groups = defaultdict(list)
-            for v in vids:
-                groups[dancer_id(v) or v].append(v)
-            units = [sorted(g) for _, g in sorted(groups.items())]
-        else:
-            units = [[v] for v in sorted(vids)]
+        groups = defaultdict(list)
+        for v in vids:
+            groups[key(v) or v].append(v)
+        units = [sorted(g) for _, g in sorted(groups.items())]
         rng.shuffle(units)
         i = 0
         for split, c in zip(SPLITS, allocate(len(units), ratios)):
@@ -664,7 +701,21 @@ def split_videos(videos, ratios, by, seed):
     return splits
 
 
+def list_clean_videos(tool, categories=None, limit=None):
+    """[(category, video_id)] that have cleaned keypoints for `tool` (4.4)."""
+    base = os.path.join(KEYPOINTS_DIR, tool)
+    if not os.path.isdir(base):
+        return []
+    cats = categories or sorted(d for d in os.listdir(base) if os.path.isdir(os.path.join(base, d)))
+    out = []
+    for c in cats:
+        vids = sorted(os.path.splitext(os.path.basename(f))[0] for f in glob.glob(os.path.join(base, c, "*.npz")))
+        out += [(c, v) for v in (vids[:limit] if limit else vids)]
+    return out
+
+
 def add_clips_args(p):
+    p.add_argument("--tool", required=True, choices=TOOLS)
     p.add_argument("--categories", nargs="*", default=None)
     p.add_argument("--window", type=int, default=240, help="clip length in frames (README: 120-300)")
     p.add_argument("--stride", type=int, default=60)
@@ -673,34 +724,37 @@ def add_clips_args(p):
     p.add_argument("--min-valid", type=float, default=0.5,
                    help="drop clips where less than this fraction of joints was observed")
     p.add_argument("--ratios", nargs=3, type=float, default=[0.7, 0.15, 0.15], metavar=("TRAIN", "VAL", "TEST"))
-    p.add_argument("--by", choices=["video", "dancer"], default="video")
+    p.add_argument("--by", choices=list(SPLIT_KEYS), default="music",
+                   help="what is kept within one split (default: music, so test songs are unseen)")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--limit", type=int, default=None, help="at most N videos per category")
 
 
 def run_clips(args):
+    tool = args.tool
     # Only videos that have both cleaned keypoints and audio features take part.
     videos, skipped = [], []
-    for cat, vid, _ in list_videos(args.categories, limit=getattr(args, "limit", None)):
-        need = [clean_keypoint_path(cat, vid)] + [
-            feature_path(k, vid) for k in ("audio_mel", "audio_onset", "beats")]
+    for cat, vid in list_clean_videos(tool, args.categories, getattr(args, "limit", None)):
+        need = [feature_path(k, vid) for k in ("audio_mel", "audio_onset", "beats")]
         missing = [rel(x) for x in need if not os.path.exists(x)]
         if missing:
             skipped.append((f"{cat}/{vid}", "missing " + ", ".join(missing)))
         else:
             videos.append((cat, vid))
     if not videos:
-        sys.exit("no video has both cleaned keypoints and audio features; run the clean (4.4) and audio (4.5) steps first")
+        sys.exit(f"no video has both cleaned keypoints ({rel(os.path.join(KEYPOINTS_DIR, tool))}) and audio "
+                 "features; run the clean (4.4) and audio (4.5) steps first, or hf_sync.py download")
 
     splits = split_videos(videos, args.ratios, args.by, args.seed)
     cat_index = write_categories_json({c for c, _ in videos})
 
-    for old in glob.glob(os.path.join(CLIPS_DIR, "*", "*.npz")):
+    out_dir = tool_clips_dir(tool)
+    for old in glob.glob(os.path.join(out_dir, "*", "*.npz")):
         os.remove(old)
 
     rows = []
     for (cat, vid), split in sorted(splits.items()):
-        kp = np.load(clean_keypoint_path(cat, vid))
+        kp = np.load(clean_keypoint_path(tool, cat, vid))
         mel_path = feature_path("audio_mel", vid)
         mel = np.load(mel_path)
         onset = np.load(feature_path("audio_onset", vid))
@@ -717,31 +771,44 @@ def run_clips(args):
             valid = kp["valid"][s:e]
             if valid.mean() < args.min_valid:
                 continue
-            out = os.path.join(CLIPS_DIR, split, f"{cat}__{vid}__{s:06d}.npz")
+            out = os.path.join(out_dir, split, f"{cat}__{vid}__{s:06d}.npz")
             os.makedirs(os.path.dirname(out), exist_ok=True)
             b = beats[(beats >= s) & (beats < e)] - s
             np.savez_compressed(out, keypoints=kp["keypoints"][s:e], valid=valid, mel=mel[s:e],
                                 onset=onset[s:e], beats=b.astype(np.int32), category=cat,
                                 category_index=cat_index[cat], video_id=vid, start=s, end=e, fps=kp["fps"])
             rows.append(dict(clip_path=rel(out), audio_feat_path=rel(mel_path), category=cat,
-                             start_frame=s, end_frame=e, split=split, video_id=vid, dancer=dancer_id(vid) or ""))
+                             start_frame=s, end_frame=e, split=split, video_id=vid,
+                             dancer=dancer_id(vid) or "", music=music_id(vid) or ""))
 
-    with open(META_CSV, "w", newline="") as f:
+    os.makedirs(out_dir, exist_ok=True)
+    with open(meta_csv_path(tool), "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=["clip_path", "audio_feat_path", "category", "start_frame",
-                                          "end_frame", "split", "video_id", "dancer"])
+                                          "end_frame", "split", "video_id", "dancer", "music"])
         w.writeheader()
         w.writerows(rows)
+
+    songs = {s: sorted({music_id(v) or v for (_, v), x in splits.items() if x == s}) for s in SPLITS}
+    info = dict(tool=tool, by=args.by, seed=args.seed, ratios=args.ratios, window=args.window,
+                stride=args.stride, min_length=args.min_length, min_valid=args.min_valid,
+                videos={s: sum(1 for x in splits.values() if x == s) for s in SPLITS},
+                clips={s: sum(r["split"] == s for r in rows) for s in SPLITS},
+                music=songs)
+    with open(os.path.join(out_dir, "split.json"), "w") as f:
+        json.dump(info, f, indent=2)
 
     for cat in sorted({c for c, _ in videos}):
         n = {s: sum(1 for (c, _), v in splits.items() if c == cat and v == s) for s in SPLITS}
         print(f"{cat}: videos {n}")
     for s in SPLITS:
-        print(f"{s}: {sum(r['split'] == s for r in rows)} clips")
+        print(f"{s}: {info['clips'][s]} clips from {info['videos'][s]} videos")
+    shared = set(songs["train"]) & (set(songs["val"]) | set(songs["test"]))
+    print(f"songs shared between train and val/test: {len(shared)}")
     if skipped:
         print(f"skipped {len(skipped)} videos, e.g.:")
         for key, why in skipped[:5]:
             print(f"  {key}: {why}")
-    print(f"wrote {rel(META_CSV)}")
+    print(f"wrote {rel(meta_csv_path(tool))}")
 
 
 # ===========================================================================

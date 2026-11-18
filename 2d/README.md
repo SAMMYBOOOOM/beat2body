@@ -44,16 +44,29 @@ Keeping the raw skeleton as the primary artifact ensures later comparison with 3
 
 ## 4. Concrete pipeline
 
-`2d/scripts/` has four files: one script per pose tool (4.3) and `pipeline.py` with the shared code and every other step. Run from the repository root, in this order:
+`2d/scripts/` has one script per pose tool (4.3), `pipeline.py` with the shared code and every other step, and `hf_sync.py` to download or upload the processed data on Hugging Face. Run from the repository root, in this order:
 
 ```bash
 python 2d/scripts/pipeline.py frames --limit 1          # 4.2 (optional, JPEGs for inspection)
 python 2d/scripts/pose_dwpose.py --preview 2            # 4.3 (one or more of the three tools)
 python 2d/scripts/pose_mediapipe.py --preview 2
 python 2d/scripts/pose_openpose.py --preview 2
-python 2d/scripts/pipeline.py clean --tool dwpose       # 4.4 (choose the tool used for training)
-python 2d/scripts/pipeline.py audio                     # 4.5
-python 2d/scripts/pipeline.py clips                     # 4.6 + 4.7
+python 2d/scripts/pipeline.py clean --tool dwpose       # 4.4 (once per tool)
+python 2d/scripts/pipeline.py audio                     # 4.5 (shared by all tools)
+python 2d/scripts/pipeline.py clips --tool dwpose       # 4.6 + 4.7 (once per tool)
+```
+
+The full run (all 10 genres, all three tools) was done on Colab with [`run_pose_tools_colab.ipynb`](run_pose_tools_colab.ipynb), and its results are on Hugging Face (one dataset per tool, see section 5). **To train, you do not need the videos or a GPU for this pipeline**: download the processed data instead.
+
+```bash
+python 2d/scripts/hf_sync.py download --tool dwpose     # keypoints + features + clips into 2d/
+```
+
+`clips` only needs the cleaned keypoints and the audio features, so a different split or window size can be rebuilt from the download without the videos:
+
+```bash
+python 2d/scripts/hf_sync.py download --tool dwpose --parts keypoints features
+python 2d/scripts/pipeline.py clips --tool dwpose --by video   # e.g. the old per-video split
 ```
 
 Steps 4.4–4.7 can also run as one command; add `--pose` to run the pose tool (4.3) first:
@@ -65,12 +78,12 @@ python 2d/scripts/pipeline.py all --tool dwpose --categories la_hiphop --pose --
 
 Every step accepts `--categories` (e.g. `--categories la_hiphop house`) and `--limit N` (at most N videos per category) for a quick test. Use `--help` for all options (e.g. `python 2d/scripts/pipeline.py clean --help`).
 
-**Requirements:** Python 3.9+, `ffmpeg` on the PATH, `numpy`, `scipy`, `opencv-python`; plus the packages listed at the top of each pose script and `librosa` for 4.5.
+**Requirements:** Python 3.9+, `ffmpeg` on the PATH, `numpy`, `scipy`, `opencv-python`; plus the packages listed at the top of each pose script, `librosa` for 4.5 and `huggingface_hub` for `hf_sync.py`. `clips` and `hf_sync.py` need only `numpy` and `huggingface_hub`.
 
 ### 4.1 Video collection
 
 - Source: the **AIST Dance Video Database** (refined 2 Mbps videos, advanced choreography `sFM`, front camera `c01`). All 10 genres are included, 21 videos each (3 dancers × 7), 28–48 seconds per video. Folder names: `la_hiphop` (LA-style Hip-hop, `gLH`), `house` (`gHO`), `middle_hiphop` (`gMH`), `break` (`gBR`), `pop` (`gPO`), `lock` (`gLO`), `waack` (`gWA`), `krump` (`gKR`), `street_jazz` (`gJS`), `ballet_jazz` (`gJB`).
-- Files are in `2d/raw_video/<category>/` and keep their original AIST names, which encode the dancer (`dXX`). Each one can be re-downloaded from `https://aistdancedb.ongaaccel.jp/v1.0.0/video/2M/<video_id>.mp4`.
+- Files are in `2d/raw_video/<category>/` and keep their original AIST names, which encode the dancer and the song: `gLH_sFM_c01_d16_mLH0_ch01` = genre `LH`, dancer `d16`, song `mLH0`. Each genre has 3 dancers and 6 songs. Each one can be re-downloaded from `https://aistdancedb.ongaaccel.jp/v1.0.0/video/2M/<video_id>.mp4`.
 - **Terms of use:** AIST Dance DB is free for academic research; redistribution is not permitted and the database must be cited (Tsuchida et al., ISMIR 2019). See https://aistdancedb.ongaaccel.jp/terms_of_use/.
 - Other sources (YouTube Creative Commons, Vimeo, FineDance) can be added as new folders in `2d/raw_video/`.
 
@@ -93,7 +106,7 @@ The three tools from section 3 are separate scripts with the same options and th
 | ------------------- | --------------------------------------------- | -------------- | --------------------------------- |
 | `pose_dwpose.py`    | DWPose-L whole-body (ONNX)                    | GPU (or CPU)   | 134 (body 18, feet, face, hands)  |
 | `pose_mediapipe.py` | MediaPipe Pose Landmarker (heavy)             | CPU            | 33                                |
-| `pose_openpose.py`  | OpenPose BODY-18 (PyTorch port of the model)  | GPU (or CPU)   | 18                                |
+| `pose_openpose.py`  | OpenPose: official CMU build (`--backend official`, BODY_25) or PyTorch port (`--backend pytorch`, BODY-18, default) | GPU (or CPU) | 25 / 18 |
 
 ```bash
 python 2d/scripts/pose_dwpose.py --categories la_hiphop house --preview 2
@@ -106,6 +119,7 @@ python 2d/scripts/pose_dwpose.py --categories la_hiphop house --preview 2
 - Model weights download automatically on first run (DWPose and OpenPose from public Hugging Face repos, MediaPipe from Google); no account is needed.
 - The confidence values are on different scales per tool, so each tool has its own default threshold (DWPose 0.3, MediaPipe 0.5, OpenPose 0.1).
 - OpenPose models are licensed for academic / non-commercial research only.
+- The published OpenPose dataset was made with `--backend official` (the Colab notebook builds it with `colab_build_openpose.sh`).
 
 ### 4.4 Keypoint cleaning and interpolation
 
@@ -113,13 +127,13 @@ python 2d/scripts/pose_dwpose.py --categories la_hiphop house --preview 2
 python 2d/scripts/pipeline.py clean --tool dwpose
 ```
 
-Reads `2d/keypoints/<category>/<video_id>_<tool>.npz` and writes the training keypoints to `2d/keypoints/<category>/<video_id>.npz`:
+Reads `2d/keypoints/<category>/<video_id>_<tool>.npz` and writes the training keypoints to `2d/keypoints/<tool>/<category>/<video_id>.npz` (one folder per tool, so the three tools can be cleaned side by side):
 
 - **Confidence thresholding:** keypoints below the tool's threshold (`--conf`) are set to `NaN`.
 - **Outlier removal:** a single-frame spike, where a joint jumps away by more than 3× its median displacement and comes straight back, is marked as missing. Fast but consistent motion is kept.
 - **Linear interpolation** over short gaps (≤ 5 frames, `--max-gap`) along the time axis for each joint independently.
 - **Smoothing:** Savitzky–Golay filter, window 7, order 2 (`--sg-window`, 0 disables it).
-- **Normalization:** the pelvis (mid-hip) is moved to `(0, 0)` and coordinates are divided by the median torso length (mid-shoulder to mid-hip) over the whole dataset. Parameters are saved to `2d/keypoints/normalization.json`; each file also stores its `pelvis` track and `scale` to undo the normalization.
+- **Normalization:** the pelvis (mid-hip) is moved to `(0, 0)` and coordinates are divided by the median torso length (mid-shoulder to mid-hip) over the whole dataset. Parameters are saved to `2d/keypoints/<tool>/normalization.json`; each file also stores its `pelvis` track and `scale` to undo the normalization.
 - Output arrays: `keypoints (T, 17, 2)` with longer gaps filled linearly, and `valid (T, 17)` marking which values were observed (use it as a loss mask).
 
 ### 4.5 Audio feature extraction
@@ -138,12 +152,12 @@ See the [librosa tutorial](https://librosa.org/doc/latest/tutorial.html).
 ### 4.6 Alignment
 
 ```bash
-python 2d/scripts/pipeline.py clips --window 240 --stride 60
+python 2d/scripts/pipeline.py clips --tool dwpose --window 240 --stride 60
 ```
 
 - Motion and audio features are both at 30 fps, so **frame `t` in motion corresponds to feature frame `t` in audio**; alignment only trims both to the shorter length.
-- **Variable-length videos:** do **not** force everything to the same length. The script uses a **sliding window**: overlapping clips of 120–300 frames (`--window`, default 240) with a stride of 60 frames. Each clip in `2d/clips/<split>/` stores its keypoints, valid mask, audio-feature slices, beats and category label.
-- `2d/meta.csv` lists every clip: `clip_path, audio_feat_path, category, start_frame, end_frame, split, video_id, dancer`.
+- **Variable-length videos:** do **not** force everything to the same length. The script uses a **sliding window**: overlapping clips of 120–300 frames (`--window`, default 240) with a stride of 60 frames. Each clip in `2d/clips/<tool>/<split>/` stores its keypoints, valid mask, audio-feature slices, beats and category label.
+- `2d/clips/<tool>/meta.csv` lists every clip: `clip_path, audio_feat_path, category, start_frame, end_frame, split, video_id, dancer, music`. `2d/clips/<tool>/split.json` records the options used and the songs in each split.
 - The same step does the split in 4.7 and writes `2d/categories.json` (section 6).
 
 ### 4.7 Dataset split
@@ -151,54 +165,71 @@ python 2d/scripts/pipeline.py clips --window 240 --stride 60
 Done by the `clips` step (`--ratios`, `--by`, `--seed`):
 
 ```bash
-python 2d/scripts/pipeline.py clips            # by video, 70 / 15 / 15 per category
-python 2d/scripts/pipeline.py clips --by dancer  # stricter: one dancer per split
+python 2d/scripts/pipeline.py clips --tool dwpose               # by song (default): 4 / 1 / 1 songs per genre
+python 2d/scripts/pipeline.py clips --tool dwpose --by video    # by video: 15 / 3 / 3 videos per genre
+python 2d/scripts/pipeline.py clips --tool dwpose --by dancer   # by dancer: 1 / 1 / 1 dancers per genre
 ```
 
-Split by **video**, not by clip, to avoid leakage. The split is stratified per category, so every split contains every category (21 videos per category → 15 / 3 / 3). Each AIST genre has only 3 dancers; `--by dancer` keeps each dancer in a single split (7 / 7 / 7 videos), which tests generalization to unseen dancers. The split of every clip is recorded in `meta.csv`.
+Clips are never split individually: whole groups of videos are assigned to a split, and the split is stratified per category, so every split contains every category.
+
+- **`--by music` (default).** All videos danced to the same song stay in one split. Each genre has 6 songs, so train / val / test get 4 / 1 / 1 songs (143 / 34 / 33 videos with seed 0). **Val and test music is never heard in training**, which is what a music-to-dance model must be tested on. Dancers still appear in every split: each AIST dancer dances to all 6 songs of their genre, so a split that keeps both songs and dancers apart would have to drop most of the data.
+- **`--by video`.** Each video on its own (15 / 3 / 3). This was the split before 2026-11-18: 29 of its 30 test videos used a song that is also in train, so test scores partly measure memorized music.
+- **`--by dancer`.** One dancer per split (7 / 7 / 7 videos), to test generalization to unseen dancers.
+
+The split of every clip is recorded in `meta.csv`, and the options in `split.json`.
 
 ## 5. Dataset layout
 
 ```
 2d/
 ├── README.md
-├── scripts/               # pose_dwpose.py, pose_mediapipe.py, pose_openpose.py, pipeline.py
-├── raw_video/             # source videos (la_hiphop/, house/, ...)
+├── run_pose_tools_colab.ipynb   # full 4.3-4.7 run on Colab + upload to Hugging Face
+├── scripts/               # pose_dwpose.py, pose_mediapipe.py, pose_openpose.py, pipeline.py, hf_sync.py
+├── raw_video/             # source videos (la_hiphop/, house/, ... 10 genres)
 ├── frames/                # extracted frames (optional, deletable after keypoints)
 ├── keypoints/
-│   ├── la_hiphop/
-│   │   ├── <video_id>_dwpose.npz      # 4.3 tool output, keypoints (T, 17, 3)
-│   │   ├── <video_id>_dwpose.mp4      # 4.3 skeleton preview (--preview)
-│   │   └── <video_id>.npz             # 4.4 cleaned, keypoints (T, 17, 2), valid (T, 17)
-│   ├── house/
-│   └── normalization.json
+│   ├── <category>/
+│   │   ├── <video_id>_<tool>.npz      # 4.3 tool output, keypoints (T, 17, 3); deleted after cleaning
+│   │   └── <video_id>_<tool>.mp4      # 4.3 skeleton preview (--preview)
+│   └── <tool>/                        # dwpose/, mediapipe/, openpose/
+│       ├── <category>/<video_id>.npz  # 4.4 cleaned, keypoints (T, 17, 2), valid (T, 17)
+│       └── normalization.json
 ├── audio/
-│   ├── la_hiphop/
-│   │   └── <video_id>.wav
-│   └── house/
-├── features/
+│   └── <category>/<video_id>.wav
+├── features/              # shared by the three tools
 │   ├── audio_mel/         # (T, 64)
 │   ├── audio_onset/       # (T,)
 │   └── beats/             # (num_beats,) indices
-├── clips/                 # sliding-window clips
-│   ├── train/
-│   ├── val/
-│   └── test/
-├── categories.json        # category -> index (section 6)
-└── meta.csv               # clip_path, audio_feat_path, category, start_frame, end_frame, split, video_id, dancer
+├── clips/
+│   └── <tool>/
+│       ├── train/ val/ test/          # <category>__<video_id>__<start>.npz
+│       ├── meta.csv                   # clip_path, audio_feat_path, category, start_frame, end_frame,
+│       │                              # split, video_id, dancer, music
+│       └── split.json                 # split options and songs per split
+└── categories.json        # category -> index (section 6), tracked in git
 ```
 
-**File formats:** use `.npz` for keypoints (compressed, fast) and `.npy` for features. Keep a `meta.csv` that lists every clip with its category and paths so training is reproducible.
+**Hugging Face.** `keypoints/<tool>/`, `features/`, `clips/<tool>/` and `categories.json` are published as one dataset per tool, with the same paths under `2d/`:
 
-**Note:** empty directories are not tracked by git. Add a `.gitkeep` to each empty folder (`frames/`, `audio/la_hiphop/`, `clips/train/`, …) so the layout exists after clone. Pipeline outputs (frames, keypoints, audio, features, clips) are ignored by `.gitignore` and can be rebuilt by re-running the scripts.
+| Dataset | Tool |
+| --- | --- |
+| [`SAMBOOM/AISTDance_dwpose`](https://huggingface.co/datasets/SAMBOOM/AISTDance_dwpose) | DWPose (recommended for training: 99.7% of joints observed) |
+| [`SAMBOOM/AISTDance_openpose`](https://huggingface.co/datasets/SAMBOOM/AISTDance_openpose) | OpenPose (official build) |
+| [`SAMBOOM/AISTDance_mediapipe`](https://huggingface.co/datasets/SAMBOOM/AISTDance_mediapipe) | MediaPipe |
+
+`python 2d/scripts/hf_sync.py download --tool dwpose` puts a dataset in place; `hf_sync.py upload --tool dwpose --prune` publishes local results together with a dataset card (source, AIST terms and citation, file format, split).
+
+**File formats:** `.npz` for keypoints and clips (compressed, fast), `.npy` for features. `meta.csv` lists every clip with its category, split and paths so training is reproducible.
+
+**Note:** empty directories are not tracked by git, so data folders contain a `.gitkeep`. Pipeline outputs (frames, keypoints, audio, features, clips, `meta.csv`, `split.json`) are ignored by `.gitignore`; rebuild them with the scripts or download them with `hf_sync.py`.
 
 ## 6. Dance category conditioning
 
-**Encoding:** start with a **learned embedding** rather than one-hot. For 2 categories, a learned embedding of dimension **16** is sufficient. One-hot with a linear layer is equivalent but less flexible; a learned embedding scales gracefully to 10+ categories later by simply increasing `num_embeddings`.
+**Encoding:** start with a **learned embedding** rather than one-hot. The data has **10 categories** (`categories.json`, indices 0-9 in alphabetical order); a learned embedding of dimension **16** is sufficient. One-hot with a linear layer is equivalent but less flexible; a learned embedding scales to more categories by increasing `num_embeddings`.
 
 **Where to inject:** inject the category embedding at **every decoder step**. For a GRU decoder, concatenate the embedding to the input at each time step (or add it to the hidden state via a linear projection). For a Transformer decoder, add it as a **prefix token** or as an additive bias to the decoder's hidden states. The latter (additive bias) ensures the category signal is available throughout generation, not just at the start.[^1][^2][^3]
 
-**Inference exposure:** expose `category` as a string argument (e.g. `"la_hiphop"` or `"house"`). Map it to an integer index via a fixed dictionary, then to the embedding. When you expand to more categories, you only need to update the mapping and retrain (or fine-tune) the embedding table; the rest of the architecture remains unchanged.
+**Inference exposure:** expose `category` as a string argument (e.g. `"la_hiphop"` or `"krump"`). Map it to an integer index via a fixed dictionary, then to the embedding. When you expand to more categories, you only need to update the mapping and retrain (or fine-tune) the embedding table; the rest of the architecture remains unchanged.
 
 **Expansion plan:** keep the category vocabulary in a separate `categories.json` file. The model checkpoint should store `num_categories` and the embedding dimension. Adding a new category later means adding one row to the embedding table and fine-tuning on data for the new category.
 
