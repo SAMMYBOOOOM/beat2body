@@ -79,7 +79,9 @@ def pose_features(j):
 def frechet(a, b):
     mu1, mu2 = a.mean(0), b.mean(0)
     s1, s2 = np.cov(a, rowvar=False), np.cov(b, rowvar=False)
-    covmean, _ = linalg.sqrtm(s1 @ s2, disp=False)
+    covmean = linalg.sqrtm(s1 @ s2)          # SciPy >= 1.16 removed `disp`; returns only the matrix
+    if isinstance(covmean, tuple):
+        covmean = covmean[0]
     if np.iscomplexobj(covmean):
         covmean = covmean.real
     return float(((mu1 - mu2) ** 2).sum() + np.trace(s1 + s2 - 2 * covmean))
