@@ -12,6 +12,7 @@ epochs; with 2155 train clips and batch 64 that is ~66k steps (the default).
 
 Outputs in --out (on SageMaker: $SM_MODEL_DIR, uploaded to S3 at the end):
     model.pt        EMA weights, config, motion normalizer, music stats, categories
+    model_raw.pt    the same with the plain (non-averaged) weights (diffusion only)
     metrics.jsonl   one JSON line per log / validation step (also printed for CloudWatch)
     samples/        generated val windows (.npz) at every --sample-every
 Resumable checkpoints go to --checkpoint-dir (SageMaker: /opt/ml/checkpoints, kept across spot restarts).
@@ -62,7 +63,8 @@ def add_args(p):
     g.add_argument("--schedule", choices=["constant", "cosine"], default="constant")
     g.add_argument("--warmup", type=int, default=0)
     g.add_argument("--grad-clip", type=float, default=0.0, help="0 = off (EDGE)")
-    g.add_argument("--ema", type=float, default=0.9999)
+    g.add_argument("--ema", type=float, default=0.9999,
+                   help="max EMA decay (EDGE: 0.9999); warmed up as min(ema, (1+step)/(10+step))")
     g = p.add_argument_group("model")
     g.add_argument("--d-model", type=int, default=512)
     g.add_argument("--ff", type=int, default=1024)
@@ -274,9 +276,12 @@ def run(args):
         opt.step()
         sched.step()
         if ema is not None:
+            # EMA warm-up: early on the average follows the model, so short runs and early
+            # validation are not dominated by the random initial weights (EDGE: fixed 0.9999)
+            decay = min(args.ema, (1 + step) / (10 + step))
             with torch.no_grad():
                 for pe, pm in zip(ema.parameters(), model.parameters()):
-                    pe.lerp_(pm, 1 - args.ema)
+                    pe.lerp_(pm, 1 - decay)
         step += 1
         if step % args.log_every == 0:
             mem = {"gpu_mem_gb": round(torch.cuda.max_memory_allocated() / 1e9, 2)} if dev == "cuda" else {}
@@ -294,6 +299,8 @@ def run(args):
             os.replace(ckpt + ".tmp", ckpt)
 
     save_bundle(os.path.join(args.out, "model.pt"), ema if ema is not None else model, cfg, lo, hi, stats, categories)
+    if ema is not None:          # the plain (non-averaged) weights too, to compare
+        save_bundle(os.path.join(args.out, "model_raw.pt"), model, cfg, lo, hi, stats, categories)
     log({"event": "done", "model": os.path.join(args.out, "model.pt")})
 
 
