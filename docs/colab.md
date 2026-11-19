@@ -38,6 +38,15 @@ RUN = "/content/drive/MyDrive/beat2body_runs/small"
 #     --checkpoint-dir /content/drive/MyDrive/beat2body_runs/edge/ckpt
 ```
 
+Smoke test of the full EDGE size first (300 steps, a few minutes): reports the GPU, speed
+(`steps_per_s`) and peak memory (`gpu_mem_gb`):
+
+```python
+!nvidia-smi --query-gpu=name,memory.total --format=csv
+!python -m beat2body train --amp --steps 300 --log-every 50 --val-every 300 --sample-every 300 \
+    --sample-steps 10 --out /content/drive/MyDrive/beat2body_runs/edge_smoke
+```
+
 ```python
 # 5. Score it on the val songs, and generate + render one dance
 !python -m beat2body evaluate --checkpoint {RUN}/model.pt

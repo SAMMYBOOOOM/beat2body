@@ -207,8 +207,9 @@ def run(args):
         with open(log_path, "a") as f:
             f.write(json.dumps(rec) + "\n")
 
+    gpu = {"gpu": torch.cuda.get_device_name(0)} if dev == "cuda" else {}
     log({"event": "start", **{k: v for k, v in vars(args).items() if isinstance(v, (int, float, str, bool))},
-         "device": dev, "params": sum(p_.numel() for p_ in model.parameters()),
+         **gpu, "device": dev, "params": sum(p_.numel() for p_ in model.parameters()),
          "train_clips": len(train), "val_clips": len(val)})
     loader = torch.utils.data.DataLoader(train, batch_size=args.batch_size, shuffle=True, drop_last=True)
     val_loader = torch.utils.data.DataLoader(val, batch_size=args.batch_size, shuffle=False)
@@ -278,8 +279,9 @@ def run(args):
                     pe.lerp_(pm, 1 - args.ema)
         step += 1
         if step % args.log_every == 0:
+            mem = {"gpu_mem_gb": round(torch.cuda.max_memory_allocated() / 1e9, 2)} if dev == "cuda" else {}
             log({"loss": loss.item(), **parts, "lr": sched.get_last_lr()[0],
-                 "steps_per_s": args.log_every / (time.time() - t0)})
+                 "steps_per_s": args.log_every / (time.time() - t0), **mem})
             t0 = time.time()
         if step % args.val_every == 0 or step == args.steps:
             log({"val_loss": validate()})
