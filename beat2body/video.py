@@ -94,7 +94,9 @@ class VideoWriter:
         if audio:  # a .wav or a video file; its first audio stream is used, from audio_offset seconds
             cmd += ["-ss", f"{audio_offset:.3f}", "-i", audio, "-map", "0:v:0", "-map", "1:a:0", "-c:a", "aac",
                     "-shortest"]
-        cmd += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p", path]
+        # +faststart: index at the front, so browsers can play the file while it downloads
+        cmd += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p",
+                "-movflags", "+faststart", path]
         self.proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
 
     def write(self, img):
