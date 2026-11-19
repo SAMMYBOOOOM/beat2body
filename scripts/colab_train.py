@@ -15,10 +15,11 @@ import subprocess
 import sys
 
 # ----------------------------------------------------------------------------- settings
-RUN_NAME = "small_bone1"           # folder under MyDrive/beat2body_runs/
-MODEL_ARGS = ["--d-model", "256", "--ff", "512", "--layers", "4", "--heads", "4"]   # small (7.1M); [] = full EDGE size
+RUN_NAME = "small_bone03"          # folder under MyDrive/beat2body_runs/
+# small model (7.1M parameters); use [] for the full EDGE size (46.9M)
+MODEL_ARGS = ["--d-model", "256", "--ff", "512", "--layers", "4", "--heads", "4"]
 STEPS = 20000                      # small: 20000 (~45-60 min on a T4); full EDGE size: 66000
-BONE_WEIGHT = 1.0                  # projected bone-length loss (0 = off)
+BONE_WEIGHT = 0.3                  # projected bone-length loss (0 = off); AWS runs the 1.0 version
 EXTRA_ARGS = ["--val-every", "2000", "--sample-every", "2000"]
 DEMO_VIDEO = "gLH_sFM_c01_d16_mLH4_ch05"   # a held-out test song (mLH4) to render at the end
 REPO_URL = "https://github.com/novaz03/beat2body"
@@ -39,8 +40,8 @@ def sh(cmd, cwd=REPO, check=True):
 
 # 1. code
 if not os.path.isdir(REPO):
-    sh(["git", "clone", "-q", "--depth", "1", "--branch", BRANCH, "--filter=blob:none", "--sparse", REPO_URL, REPO],
-       cwd="/content")
+    sh(["git", "clone", "-q", "--depth", "1", "--branch", BRANCH, "--filter=blob:none", "--sparse",
+        REPO_URL, REPO], cwd="/content")
     sh(["git", "sparse-checkout", "set", "--no-cone", "/*", "!/2d/raw_video/"])
 else:
     sh(["git", "pull", "-q", "--depth", "1", "origin", BRANCH])
@@ -48,7 +49,8 @@ sh([sys.executable, "-m", "pip", "install", "-q", "-e", ".[train]"])
 
 # 2. data
 if not os.path.exists(f"{REPO}/2d/clips/dwpose/meta.csv"):
-    sh([sys.executable, "-m", "beat2body", "hf", "download", "--tool", "dwpose", "--parts", "keypoints", "features", "meta"])
+    sh([sys.executable, "-m", "beat2body", "hf", "download", "--tool", "dwpose",
+        "--parts", "keypoints", "features", "meta"])
 
 # 3. Drive
 from google.colab import drive  # noqa: E402
@@ -63,8 +65,8 @@ import torch  # noqa: E402
 amp = ["--amp"] if torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 8 else []
 print("GPU:", torch.cuda.get_device_name(0) if torch.cuda.is_available() else "none (CPU!)", "| amp:", bool(amp))
 if not os.path.exists(f"{RUN}/model.pt"):
-    sh([sys.executable, "-m", "beat2body", "train", *MODEL_ARGS, "--steps", str(STEPS), "--bone-weight", str(BONE_WEIGHT),
-        *EXTRA_ARGS, *amp, "--out", RUN, "--checkpoint-dir", f"{RUN}/ckpt"])
+    sh([sys.executable, "-m", "beat2body", "train", *MODEL_ARGS, "--steps", str(STEPS),
+        "--bone-weight", str(BONE_WEIGHT), *EXTRA_ARGS, *amp, "--out", RUN, "--checkpoint-dir", f"{RUN}/ckpt"])
 else:
     print(f"{RUN}/model.pt exists: training already finished (delete it to train again)")
 
@@ -72,7 +74,8 @@ else:
 sh([sys.executable, "-m", "beat2body", "evaluate", "--checkpoint", f"{RUN}/model.pt", "--device", "cuda"])
 sh([sys.executable, "-m", "beat2body", "sample", "--checkpoint", f"{RUN}/model.pt", "--video-id", DEMO_VIDEO,
     "--seconds", "20", "--device", "cuda", "-o", f"{RUN}/generated/{DEMO_VIDEO}.npz"])
-sh([sys.executable, "-m", "beat2body", "render", "--video-id", DEMO_VIDEO, "--keypoints", f"{RUN}/generated/{DEMO_VIDEO}.npz",
-    "--labels", "real dancer", "generated", "--frames", "600", "-o", f"{RUN}/{DEMO_VIDEO}.mp4"])
+sh([sys.executable, "-m", "beat2body", "render", "--video-id", DEMO_VIDEO,
+    "--keypoints", f"{RUN}/generated/{DEMO_VIDEO}.npz", "--labels", "real dancer", "generated",
+    "--frames", "600", "-o", f"{RUN}/{DEMO_VIDEO}.mp4"])
 print(f"\nDone. Results in Google Drive: MyDrive/beat2body_runs/{RUN_NAME}/ "
       f"(model.pt, model_raw.pt, metrics.jsonl, eval_val.json, {DEMO_VIDEO}.mp4)")
