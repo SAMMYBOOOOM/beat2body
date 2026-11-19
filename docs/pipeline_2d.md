@@ -245,3 +245,31 @@ Pipeline outputs (frames, keypoints, audio, features, clips, cards, renders) are
 [^1]: https://147.46.181.99/bitstream/10371/228833/1/000000193021.pdf
 [^2]: https://scienmag.com/diffusion-and-graph-networks-improve-music-conditioned-dance-generation-and-style-control/
 [^3]: https://rc.signalprocessingsociety.org/conferences/icassp-2022/spsicassp22vid1626
+## 7. Energy: diagnosis and fixes
+
+The first trained models (small, 7.1M) moved at about half the real speed. Diagnostics on model A
+(AWS job `beat2body-diffusion-small-bone-1fa7ddee`, 96 windows):
+
+| Check | Result | Meaning |
+|---|---|---|
+| Speed on train music vs val music | 0.58 vs 0.51 | not a generalization / overfitting problem |
+| Guidance 1 vs 2 | 0.55 vs 0.51 | not caused by classifier-free guidance |
+| Motion power by frequency, generated / real | 0–1 Hz 1.12, 1–2 Hz 0.25, 2–4 Hz 0.17 | slow swaying is there; movement on the beat (80–135 BPM = 1.3–4.5 Hz with half-beats) is missing |
+| One-step x0 prediction from almost clean input (t = 10) | speed 0.76 | the denoiser removes fine motion even when given it |
+| MinMax space: data std / frame-to-frame step / noise std at t = 10 | 0.15 / 0.022 / 0.027 | beat-level motion is the size of the smallest diffusion noise |
+
+New metric `BeatPow` (evaluate, and `beat_power` in the training checks): power of the pelvis-centred
+joint motion at 1–4 Hz relative to real. Model A: 0.26.
+
+Fixes, as flags (defaults keep EDGE's behaviour):
+
+- `--normalizer zscore`: standardize each feature instead of MinMax (data std ×7.9 against the same
+  noise). The recon / velocity losses are rescaled per feature so that the loss equals the MinMax loss;
+  only the signal-to-noise ratio of the diffusion changes.
+- `--param v`: v-prediction; x0 = sqrt(a) x_t − sqrt(1−a) v, so at low noise the input passes through
+  and the network predicts a correction. Min-SNR (x0 form, min(SNR, γ)) is the standard Min-SNR-v.
+- `--energy-weight W`: per window and joint, (log ratio of mean speed)² + (log ratio of movement
+  amplitude)² to the real window. It does not depend on the phase of the movement, which the model can
+  not know exactly, so it penalizes damping without forcing an average.
+
+Sweep: `scripts/colab_train.py` (`reg_small`, `fix_small`, `fix_energy_small`, optional EDGE size).

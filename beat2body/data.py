@@ -315,11 +315,22 @@ class DanceClips(Dataset):
             "start": s,
         }
 
-    def motion_range(self):
-        """Per-dimension min / max over this split's frames (all tools), made symmetric in x so that
-        flipped items stay in range (EDGE normalizes with MinMax to [-1, 1]); contacts are 0 / 1."""
+    def motion_range(self, mode="minmax"):
+        """Per-dimension (lo, hi) over this split's frames (all tools) for the [-1, 1] normalizer.
+        minmax (EDGE): min / max, made symmetric in x so that flipped items stay in range.
+        zscore: mean -/+ std over the frames and their mirror images (so lo / hi are flip-symmetric).
+        Contacts are always 0 / 1."""
         frames = np.concatenate([self.videos[(t, r["video_id"])]["motion"][int(r["start_frame"]):int(r["end_frame"])]
                                  for r in self.rows for t in self.tools_of[r["video_id"]]])
+        if mode == "zscore":
+            ok = np.isfinite(frames).all(1)
+            f = frames[ok]
+            f = np.concatenate([f, flip_motion(f, np.ones((len(f), N_JOINTS), bool), np.ones(len(f), bool))[0]])
+            mu, sd = f.mean(0), f.std(0) + 1e-6
+            lo, hi = mu - sd, mu + sd
+            lo[CONTACT], hi[CONTACT] = 0.0, 1.0
+            return lo.astype(np.float32), hi.astype(np.float32)
+        assert mode == "minmax", mode
         lo, hi = frames.min(0), frames.max(0)
         xs = np.r_[ROOT.start, np.arange(JOINTS.start, MOTION_DIM, 2)]
         lo[xs], hi[xs] = np.minimum(lo[xs], -hi[xs]), np.maximum(hi[xs], -lo[xs])

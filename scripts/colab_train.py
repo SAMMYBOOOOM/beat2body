@@ -24,11 +24,17 @@ COMMON = ["--steps", "20000", "--val-every", "2000", "--sample-every", "2000", "
 # one entry per run, trained in parallel; [] instead of SMALL = full EDGE size (46.9M).
 # --recipe regularized (the default): dropout 0.2, weight decay 0.1, cosine LR, 3 pose tools, time-stretch +
 # jitter augmentation, Min-SNR, model.pt = best val FID_k. --recipe edge: EDGE's original settings.
+# Energy fixes (docs/pipeline_2d.md "Energy"): --normalizer zscore (fine motion stands out from the noise),
+# --param v (skip path at low noise), --energy-weight (phase-invariant speed / amplitude loss).
+FIX = ["--normalizer", "zscore", "--param", "v"]
 RUNS = {
-    "reg_small": SMALL + COMMON,                                                   # new recipe
-    "reg_small_vel1": SMALL + COMMON + ["--loss-weights", "0.636", "1.0", "0.646", "10.942"],  # weaker velocity loss
-    "edge_small": SMALL + COMMON + ["--recipe", "edge"],                           # control: EDGE settings
+    "reg_small": SMALL + COMMON,                                         # control: regularized recipe only
+    "fix_small": SMALL + COMMON + FIX,                                   # + z-score + v-prediction
+    "fix_energy_small": SMALL + COMMON + FIX + ["--energy-weight", "0.25"],   # + energy loss
 }
+# Larger model: EDGE size (46.9M) with every fix. ~4x slower per step; on a T4 next to the small runs it
+# takes most of a session, so only uncomment it on an A100 / L4 runtime (or run it on AWS g6.xlarge).
+# RUNS["fix_energy_edge"] = COMMON + FIX + ["--energy-weight", "0.25"]
 REPO_URL = "https://github.com/novaz03/beat2body"
 BRANCH = "claude/relaxed-knuth-fc6tqf"
 REPO = os.environ.get("BEAT2BODY_REPO", "/content/beat2body")
@@ -123,7 +129,7 @@ for name, args in RUNS.items():
 while procs:
     time.sleep(POLL_SECONDS)
     print(f"\n{time.strftime('%H:%M:%S')}  {'run':16s} {'step':>13s} {'loss':>7s} {'steps/s':>8s} "
-          f"{'val_loss':>9s} {'speed':>6s} {'contact':>8s} {'bone_cv':>8s} {'(real)':>7s}")
+          f"{'val_loss':>9s} {'speed':>6s} {'beat_pw':>8s} {'contact':>8s} {'bone_cv':>8s} {'(real)':>7s}")
     for name in list(procs):
         m = last_metrics(os.path.join(ROOT, name))
         t, v, s = m.get("train", {}), m.get("val", {}), m.get("sample", {}).get("sample", {})
@@ -131,7 +137,8 @@ while procs:
         fmt = lambda d, k, f: format(d[k], f) if k in d else "-"  # noqa: E731
         print(f"{'':10s}{name:16s} {str(t.get('step', 0)) + '/' + str(steps):>13s} {fmt(t, 'loss', '7.3f')} "
               f"{fmt(t, 'steps_per_s', '8.2f')} {fmt(v, 'val_loss', '9.3f')} {fmt(s, 'speed_ratio', '6.2f')} "
-              f"{fmt(s, 'contact_rate', '8.2f')} {fmt(s, 'bone_cv', '8.3f')} {fmt(s, 'bone_cv_real', '7.3f')}")
+              f"{fmt(s, 'beat_power', '8.2f')} {fmt(s, 'contact_rate', '8.2f')} "
+              f"{fmt(s, 'bone_cv', '8.3f')} {fmt(s, 'bone_cv_real', '7.3f')}")
         code = procs[name].poll()
         if code is not None:
             print(f"[{name}] {'finished' if code == 0 else f'FAILED (exit {code})'}")

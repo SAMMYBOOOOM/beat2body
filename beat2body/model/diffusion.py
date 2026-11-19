@@ -11,6 +11,14 @@ denoising step, with the guidance weight ramped up over the first half of the st
 are cross-faded linearly.
 Additions: masks for unobserved joints / root in the losses; genre condition dropped independently
 (p = 0.25); inpainting of known frames in DDIM (editing).
+
+Options beyond EDGE (off by default, see docs/pipeline_2d.md "Energy"):
+    param="v"        the network predicts v = sqrt(a) eps - sqrt(1-a) x0 and x0 is derived from it, so at low
+                     noise x0 = x_t minus a small correction (a built-in skip path that keeps fine motion)
+    z-score scaling  Normalizer(..., dim_weight): data standardized per feature (more signal vs the noise);
+                     dim_weight rescales the recon / velocity terms so the loss equals the MinMax loss
+    energy_weight    phase-invariant loss on each joint's mean speed and movement amplitude per window
+                     (log ratio to the real window), against "swaying instead of dancing"
 """
 import math
 
@@ -39,12 +47,16 @@ def cosine_alphas_cumprod(T, s=0.008):
 
 
 class Normalizer:
-    """MinMax to [-1, 1] per feature (EDGE's normalizer)."""
+    """Affine map of [lo, hi] to [-1, 1] per feature. EDGE: lo / hi = min / max (MinMax). z-score is the
+    same map with lo / hi = mean -/+ std. dim_weight (38,) weights each feature in the recon / velocity
+    losses (z-score: (std / half the min-max span)^2, so those losses equal the MinMax ones)."""
 
-    def __init__(self, lo, hi, device="cpu"):
+    def __init__(self, lo, hi, device="cpu", dim_weight=None):
         self.lo = torch.as_tensor(lo, device=device, dtype=torch.float32)
         self.hi = torch.as_tensor(hi, device=device, dtype=torch.float32)
         self.span = (self.hi - self.lo).clamp(min=1e-6)
+        self.dim_weight = None if dim_weight is None else torch.as_tensor(dim_weight, device=device,
+                                                                          dtype=torch.float32)
 
     def norm(self, x):
         return 2 * (x - self.lo) / self.span - 1
@@ -72,17 +84,42 @@ def masked_mse(a, b, mask):
     return ((a - b) ** 2 * mask).sum() / mask.sum().clamp(min=1)
 
 
+def _masked_mean(x, m, dim):
+    return (x * m).sum(dim) / m.sum(dim).clamp(min=1)
+
+
+def energy_loss(pa, ta, valid, w):
+    """Phase-invariant: per window and joint, log ratio of the mean speed (absolute joints) and of the
+    movement amplitude (std over time of the pelvis-centred joint) to the real window's. (B,) weights w."""
+    mv = (valid[:, 1:] & valid[:, :-1]).float()                               # (B, L-1, 17)
+    sp = _masked_mean((pa[:, 1:] - pa[:, :-1]).norm(dim=-1), mv, 1)            # (B, 17)
+    st = _masked_mean((ta[:, 1:] - ta[:, :-1]).norm(dim=-1), mv, 1)
+    m = valid.float()[..., None]
+    pelvis_p, pelvis_t = pa[..., 11:13, :].mean(-2, keepdim=True), ta[..., 11:13, :].mean(-2, keepdim=True)
+    rp, rt = pa - pelvis_p, ta - pelvis_t
+
+    def amp(r):
+        mu = _masked_mean(r, m, 1)                                            # (B, 17, 2)
+        return (_masked_mean((r - mu[:, None]) ** 2, m, 1).sum(-1) + 1e-8).sqrt()   # (B, 17)
+    e = (torch.log(sp + 5e-3) - torch.log(st + 5e-3)) ** 2 \
+        + (torch.log(amp(rp) + 2e-2) - torch.log(amp(rt) + 2e-2)) ** 2
+    present = (valid.float().sum(1) >= 10).float() * w[:, None]                # joints seen in >= 10 frames
+    return (e * present).sum() / present.sum().clamp(min=1e-8)
+
+
 def motion_losses(pred_n, target_n, valid, root_valid, normalizer, weights=EDGE_WEIGHTS, bone_weight=0.0,
-                  sample_weight=None):
+                  sample_weight=None, energy_weight=0.0):
     """EDGE's four losses on normalized predictions / targets (B, L, 38), plus the projected bone-length
     loss: each body bone's on-screen length vs the same bone in the real frame (relative error), so
     foreshortening in the real data is kept and no constant length is assumed. sample_weight (B,) weights
     each sequence (Min-SNR); the foot loss is not weighted (it uses the model's own contact output)."""
     w = torch.ones(pred_n.shape[0], device=pred_n.device) if sample_weight is None else sample_weight
     m = feature_mask(valid, root_valid) * w[:, None, None]
-    recon = masked_mse(pred_n, target_n, m)
+    dw = normalizer.dim_weight
+    recon = masked_mse(pred_n, target_n, m) if dw is None else (((pred_n - target_n) ** 2 * m * dw).sum()
+                                                              / m.sum().clamp(min=1))
     nc = slice(CONTACT.stop, MOTION_DIM)
-    mv = m[:, 1:, nc] * m[:, :-1, nc]
+    mv = m[:, 1:, nc] * m[:, :-1, nc] * (1 if dw is None else dw[nc])
     vel = masked_mse(pred_n[:, 1:, nc] - pred_n[:, :-1, nc], target_n[:, 1:, nc] - target_n[:, :-1, nc], mv)
     pa, ta = absolute_joints(normalizer.denorm(pred_n)), absolute_joints(normalizer.denorm(target_n))
     mj = (valid & root_valid[..., None]).float()[..., None].expand_as(pa) * w[:, None, None, None]
@@ -98,13 +135,19 @@ def motion_losses(pred_n, target_n, valid, root_valid, normalizer, weights=EDGE_
     bone = (((lp - lt) / lt.clamp(min=0.05)) ** 2 * mb).sum() / mb.sum().clamp(min=1)
     parts = {"recon": recon.item(), "vel": vel.item(), "fk": fk.item(), "foot": foot.item(), "bone": bone.item()}
     total = weights[0] * recon + weights[1] * vel + weights[2] * fk + weights[3] * foot + bone_weight * bone
+    if energy_weight > 0:
+        energy = energy_loss(pa, ta, valid & root_valid[..., None], w)
+        parts["energy"] = energy.item()
+        total = total + energy_weight * energy
     return total, parts
 
 
 class EDGEDiffusion:
     def __init__(self, model, normalizer, steps=1000, music_drop=0.25, genre_drop=0.25, guidance=2.0,
-                 weights=EDGE_WEIGHTS, bone_weight=0.0, min_snr=0.0):
+                 weights=EDGE_WEIGHTS, bone_weight=0.0, min_snr=0.0, param="x0", energy_weight=0.0):
+        assert param in ("x0", "v"), param
         self.model, self.normalizer, self.T = model, normalizer, steps
+        self.param, self.energy_weight = param, energy_weight
         self.min_snr = min_snr
         self.ac = cosine_alphas_cumprod(steps)
         self.music_drop, self.genre_drop, self.guidance, self.weights = music_drop, genre_drop, guidance, weights
@@ -117,6 +160,13 @@ class EDGEDiffusion:
         ac = self._ac(t, x0.device)
         return ac.sqrt() * x0 + (1 - ac).sqrt() * noise
 
+    def to_x0(self, x_t, out, t):
+        """Network output -> x0 (x0-prediction: unchanged; v-prediction: x0 = sqrt(a) x_t - sqrt(1-a) v)."""
+        if self.param == "x0":
+            return out
+        ac = self._ac(t, x_t.device)
+        return ac.sqrt() * x_t - (1 - ac).sqrt() * out
+
     def loss(self, x0, cond, genre, valid, root_valid):
         """x0 (B, L, 38) normalized motion; cond (B, L, A); genre (B,); masks (B, L, 17), (B, L)."""
         B = x0.shape[0]
@@ -125,20 +175,21 @@ class EDGEDiffusion:
         keep_music = torch.rand(B, device=x0.device) >= self.music_drop
         g = torch.where(torch.rand(B, device=x0.device) < self.genre_drop,
                         torch.full_like(genre, self.model.n_genres), genre)
-        pred = self.model(x_t, cond, t, g, keep_music).float()      # losses in float32 under autocast
+        pred = self.to_x0(x_t.float(), self.model(x_t, cond, t, g, keep_music).float(), t)  # float32 losses
         sw = None
         if self.min_snr > 0:    # Min-SNR-gamma (Hang et al. 2023), x0 form: weight = min(SNR, gamma)
             ac = self.ac.to(x0.device)[t]
             sw = torch.clamp(ac / (1 - ac), max=self.min_snr)
             sw = sw / sw.mean().clamp(min=1e-8)
-        return motion_losses(pred, x0, valid, root_valid, self.normalizer, self.weights, self.bone_weight, sw)
+        return motion_losses(pred, x0, valid, root_valid, self.normalizer, self.weights, self.bone_weight, sw,
+                             self.energy_weight)
 
     def predict(self, x, cond, t, genre, guidance):
         keep = torch.ones(x.shape[0], dtype=torch.bool, device=x.device)
-        cond_out = self.model(x, cond, t, genre, keep)
+        cond_out = self.to_x0(x, self.model(x, cond, t, genre, keep), t)
         if isinstance(guidance, float) and guidance == 1.0:
             return cond_out
-        unc = self.model(x, cond, t, torch.full_like(genre, self.model.n_genres), ~keep)
+        unc = self.to_x0(x, self.model(x, cond, t, torch.full_like(genre, self.model.n_genres), ~keep), t)
         return unc + (cond_out - unc) * guidance
 
     @torch.no_grad()

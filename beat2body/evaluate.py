@@ -15,6 +15,9 @@ that window's music and genre. Metrics, adapted to 2D from AIST++ / Bailando / E
     PFC     EDGE's physical foot contact score: mean over frames of root acceleration x the slower
             ankle's speed (each normalized by its max); lower = fewer sliding / floating feet
     speed   mean joint speed relative to the real val windows (1 = same energy, ~0 = frozen)
+    BeatPow power of the pelvis-centred joint motion at 1-4 Hz (the beat and half-beat band at 80-135 BPM)
+            relative to the real windows: 1 = as much rhythmic movement as real; a model that sways
+            slowly instead of dancing on the beat scores far below its speed
     BoneCV  drift detector: for each window, the variation (std / mean over time) of each body bone's
             on-screen length, averaged over bones and windows. Real dance is not 0 (foreshortening);
             generated dance should match the real value, higher = the body changes size
@@ -147,6 +150,14 @@ def long_drift(gen, bundle, split, seconds, seed):
             {k: float(np.mean([r[k] for r in real_v])) for k in keys}, len(vids))
 
 
+def beat_power(j, lo=1.0, hi=4.0, fps=30):
+    """Mean spectral power of the pelvis-centred joints' motion between lo and hi Hz; j (N, L, 17, 2)."""
+    rel = j - j[:, :, [11, 12]].mean(2, keepdims=True)
+    f = np.abs(np.fft.rfft(rel - rel.mean(1, keepdims=True), axis=1)) ** 2
+    fr = np.fft.rfftfreq(j.shape[1], 1 / fps)
+    return float(f[:, (fr >= lo) & (fr < hi)].sum(1).mean())
+
+
 def mean_speed(j):
     return float(np.linalg.norm(np.diff(j, axis=1), axis=-1).mean())
 
@@ -157,7 +168,7 @@ def score(name, j, real_j, beats, z_k, z_p, contact=None):
     row = {"name": name, "FID_k": frechet(fk, rk), "FID_p": frechet(fp, rp), "Div_k": diversity(fk),
            "Div_p": diversity(fp), "BAS": float(np.mean([bas(x, b) for x, b in zip(j, beats)])),
            "PFC": float(np.mean([pfc(x) for x in j])), "speed": mean_speed(j) / mean_speed(real_j),
-           "BoneCV": bone_cv(j)}
+           "BeatPow": beat_power(j) / beat_power(real_j), "BoneCV": bone_cv(j)}
     if contact is not None:
         row["contact"] = float(contact)
     return row
@@ -206,12 +217,13 @@ def run(args):
         score("Frozen mean pose", static, real, beats, z_k, z_p),
     ]
     print(f"\n{args.split}: {len(real)} windows of {cfg['seq_len']} frames; checkpoint {args.checkpoint}")
-    cols = ["FID_k", "FID_p", "Div_k", "Div_p", "BAS", "PFC", "speed", "BoneCV"]
+    cols = ["FID_k", "FID_p", "Div_k", "Div_p", "BAS", "PFC", "speed", "BeatPow", "BoneCV"]
     print(f"{'':34s}" + "".join(f"{c:>9s}" for c in cols))
     for r in rows:
         print(f"{r['name']:34s}" + "".join(f"{r[c]:9.3f}" for c in cols))
     print("FID: lower = closer to real; Div: higher = more varied; BAS: higher = more on the beat;"
-          " PFC: lower = less foot sliding; speed: 1 = as energetic as real; BoneCV: should match real")
+          " PFC: lower = less foot sliding; speed: 1 = as energetic as real;\n"
+          "BeatPow: 1 = as much movement on the beat (1-4 Hz) as real; BoneCV: should match real")
     drift = None
     if args.long_seconds > 0:
         g, r, n = long_drift(gen, bundle, args.split, args.long_seconds, args.seed)

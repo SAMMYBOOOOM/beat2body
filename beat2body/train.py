@@ -115,6 +115,13 @@ def add_args(p):
                    help="projected bone-length loss (on-screen bone lengths vs the real frame); 0 = off (EDGE)")
     g.add_argument("--sample-steps", type=int, default=50)
     g.add_argument("--min-snr", type=float, default=None, help="Min-SNR loss weighting gamma; 0 = off (EDGE)")
+    g.add_argument("--normalizer", choices=["minmax", "zscore"], default="minmax",
+                   help="minmax (EDGE): features to [-1, 1]; zscore: standardized, so fine motion stands out "
+                        "from the diffusion noise (recon / velocity losses rescaled to equal the MinMax ones)")
+    g.add_argument("--param", choices=["x0", "v"], default="x0",
+                   help="what the network predicts: x0 (EDGE) or v (x0 derived from it; skip path at low noise)")
+    g.add_argument("--energy-weight", type=float, default=0.0,
+                   help="phase-invariant loss on each joint's speed and amplitude per window; 0 = off (EDGE)")
     g = p.add_argument_group("augmentation (train split only)")
     g.add_argument("--extra-tools", nargs="*", choices=TOOLS, default=None,
                    help="other pose tools' keypoints of the same videos as extra training views")
@@ -146,7 +153,7 @@ def add_args(p):
 
 CFG_KEYS = ("model", "tool", "feature_set", "scale_norm", "bone_weight", "min_snr", "seq_len", "d_model", "ff",
             "layers", "heads", "dropout", "gru_hidden", "gru_layers", "diffusion_steps", "music_drop", "genre_drop",
-            "guidance", "loss_weights")
+            "guidance", "loss_weights", "normalizer", "param", "energy_weight")
 
 
 def build_model(cfg):
@@ -158,16 +165,19 @@ def build_model(cfg):
                        dropout=cfg["dropout"])
 
 
+def make_diffusion(net, normalizer, cfg):
+    return EDGEDiffusion(net, normalizer, cfg["diffusion_steps"], cfg["music_drop"], cfg["genre_drop"],
+                         cfg["guidance"], tuple(cfg["loss_weights"]), cfg.get("bone_weight", 0.0),
+                         cfg.get("min_snr", 0.0), cfg.get("param", "x0"), cfg.get("energy_weight", 0.0))
+
+
 class Generator:
     """A trained model + its normalizer: generates denormalized motion (B, L, 38)."""
 
     def __init__(self, model, cfg, lo, hi, device):
         self.model, self.cfg, self.device = model.to(device).eval(), cfg, device
         self.normalizer = Normalizer(lo, hi, device)
-        self.diffusion = EDGEDiffusion(self.model, self.normalizer, cfg["diffusion_steps"], cfg["music_drop"],
-                                       cfg["genre_drop"], cfg["guidance"], tuple(cfg["loss_weights"]),
-                                       cfg.get("bone_weight", 0.0), cfg.get("min_snr", 0.0)) \
-            if cfg["model"] == "diffusion" else None
+        self.diffusion = make_diffusion(self.model, self.normalizer, cfg) if cfg["model"] == "diffusion" else None
 
     @torch.no_grad()
     def generate(self, cond, genre, first=None, guidance=None, steps=50, link_windows=False, generator=None,
@@ -239,13 +249,18 @@ def run(args):
         train.rows = train.rows[:args.max_train_clips]
         train.augment = False
         val = train
-    lo, hi = train.motion_range()
+    lo, hi = train.motion_range(args.normalizer)
     cfg = {k: getattr(args, k) for k in CFG_KEYS}
     cfg["n_genres"] = len(categories)
     model = build_model(cfg).to(dev)
     gen = Generator(model, cfg, lo, hi, dev)
     model.train()
     norm = gen.normalizer
+    if args.normalizer != "minmax":        # recon / velocity losses in MinMax units: same loss, more signal
+        mlo, mhi = train.motion_range("minmax")
+        norm.dim_weight = torch.as_tensor(((hi - lo) / (mhi - mlo).clip(1e-6)) ** 2, device=dev)
+        print(f"[train] {args.normalizer} normalizer: data std in the diffusion space x"
+              f"{float(np.median((mhi - mlo)[2:] / (hi - lo)[2:])):.1f} vs MinMax (median feature)")
     ema = copy.deepcopy(model).eval() if args.model == "diffusion" else None
     for p_ in (ema.parameters() if ema is not None else []):
         p_.requires_grad_(False)
@@ -310,10 +325,7 @@ def run(args):
         cond, genre = b["audio"].to(dev), b["category"].to(dev)
         valid, root_valid = b["valid"].to(dev), b["root_valid"].to(dev)
         if args.model == "diffusion":
-            d = gen.diffusion if net is model else EDGEDiffusion(net, norm, args.diffusion_steps, args.music_drop,
-                                                               args.genre_drop, args.guidance,
-                                                               tuple(args.loss_weights), args.bone_weight,
-                                                               args.min_snr)
+            d = gen.diffusion if net is model else make_diffusion(net, norm, cfg)
             return d.loss(x0, cond, genre, valid, root_valid)
         return gru_loss(net, x0, cond, genre, valid, root_valid, norm, bone_weight=args.bone_weight)
 
@@ -347,12 +359,13 @@ def run(args):
                 np.savez(os.path.join(d, "samples", name), motion=m[i].cpu().numpy(), real=real[i].cpu().numpy(),
                          video_id=b["video_id"][i], start=int(b["start"][i]), step=step)
         model.train()
-        return {"speed_ratio": joint_speed(m) / max(joint_speed(real), 1e-8),
+        bp = beat_power(absolute_joints(m).cpu().numpy()) / max(beat_power(absolute_joints(real).cpu().numpy()), 1e-12)
+        return {"speed_ratio": joint_speed(m) / max(joint_speed(real), 1e-8), "beat_power": bp,
                 "contact_rate": (m[..., CONTACT] > 0.5).float().mean().item(),
                 "bone_cv": bone_cv(m), "bone_cv_real": bone_cv(real)}
 
     # model selection: FID_k of generated vs real motion on fixed val windows, at every sample check
-    from beat2body.evaluate import frechet, kinetic_features
+    from beat2body.evaluate import beat_power, frechet, kinetic_features
     sel_idx = np.linspace(0, len(val) - 1, min(128, len(val))).round().astype(int).tolist()
     sel_real = torch.stack([val[i]["motion"] for i in sel_idx])
     real_k = kinetic_features(absolute_joints(sel_real).numpy())
