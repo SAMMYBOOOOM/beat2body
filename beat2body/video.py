@@ -86,13 +86,14 @@ def draw_skeleton(img, kpts, thr=None, color=(0, 255, 0), thickness=3, radius=5)
 class VideoWriter:
     """Writes BGR frames to an H.264 mp4 through ffmpeg, optionally muxing an audio file."""
 
-    def __init__(self, path, fps, width, height, audio=None):
+    def __init__(self, path, fps, width, height, audio=None, audio_offset=0.0):
         os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
         self.size = (width, height)
         cmd = ["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "bgr24",
                "-s", f"{width}x{height}", "-r", str(fps), "-i", "-"]
-        if audio:  # a .wav or a video file; its first audio stream is used
-            cmd += ["-i", audio, "-map", "0:v:0", "-map", "1:a:0", "-c:a", "aac", "-shortest"]
+        if audio:  # a .wav or a video file; its first audio stream is used, from audio_offset seconds
+            cmd += ["-ss", f"{audio_offset:.3f}", "-i", audio, "-map", "0:v:0", "-map", "1:a:0", "-c:a", "aac",
+                    "-shortest"]
         cmd += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p", path]
         self.proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
 

@@ -14,7 +14,11 @@ Outputs in --out (on SageMaker: $SM_MODEL_DIR, uploaded to S3 at the end):
     model.pt        EMA weights, config, motion normalizer, music stats, categories
     model_raw.pt    the same with the plain (non-averaged) weights (diffusion only)
     metrics.jsonl   one JSON line per log / validation step (also printed for CloudWatch)
-    samples/        generated val windows (.npz) at every --sample-every
+    samples/        generated val windows (.npz: generated + real motion) at every --sample-every
+    snapshots/      model at every --snapshot-every steps (EMA weights, same format as model.pt)
+With --checkpoint-dir (always on SageMaker), metrics.jsonl, samples/ and snapshots/ are also written
+there as training runs; SageMaker syncs that folder to S3 continuously, so progress can be
+downloaded and shared before the job ends (`python -m beat2body aws download JOB`).
 Resumable checkpoints go to --checkpoint-dir (SageMaker: /opt/ml/checkpoints, kept across spot restarts).
 
 Validation: loss on val windows, and for generated val windows the joint speed relative to real
@@ -99,6 +103,8 @@ def add_args(p):
     g.add_argument("--log-every", type=int, default=100)
     g.add_argument("--val-every", type=int, default=2000)
     g.add_argument("--sample-every", type=int, default=10000)
+    g.add_argument("--snapshot-every", type=int, default=None,
+                   help="save a model snapshot every N steps (default: --sample-every; 0 = off)")
     g.add_argument("--out", default=os.environ.get("SM_MODEL_DIR", os.path.join(paths.REPO_ROOT, "runs", "latest")))
     g.add_argument("--checkpoint-dir", default=os.environ.get("SM_CHECKPOINT_DIR", "/opt/ml/checkpoints")
                    if os.environ.get("SM_MODEL_DIR") else None)
@@ -175,9 +181,11 @@ def joint_speed(motion):
 
 
 def run(args):
-    if args.tiny:
+    if args.tiny:                    # small model; logging defaults only where not set explicitly
         args.d_model, args.ff, args.layers, args.heads = 64, 128, 2, 2
-        args.log_every, args.val_every, args.sample_every = 100, 500, 1000
+        for k, default, tiny in (("log_every", 100, 100), ("val_every", 2000, 500), ("sample_every", 10000, 1000)):
+            if getattr(args, k) == default:
+                setattr(args, k, tiny)
         args.ema = min(args.ema, 0.99)
     torch.manual_seed(args.seed)
     dev = ("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu") \
@@ -185,7 +193,6 @@ def run(args):
     if args.download:
         ensure_data(args.tool)
     os.makedirs(args.out, exist_ok=True)
-    log_path = os.path.join(args.out, "metrics.jsonl")
 
     stats = audio_stats(args.tool, args.feature_set)
     categories = aist.load_categories()
@@ -226,11 +233,16 @@ def run(args):
         step = s["step"]
         print(f"[train] resumed from {ckpt} at step {step}")
 
+    live = args.checkpoint_dir or args.out          # synced to S3 during SageMaker jobs
+    os.makedirs(live, exist_ok=True)
+    snapshot_every = args.sample_every if args.snapshot_every is None else args.snapshot_every
+
     def log(rec):
         rec = {"step": step, **rec}
         print(json.dumps(rec), flush=True)
-        with open(log_path, "a") as f:
-            f.write(json.dumps(rec) + "\n")
+        for d in {args.out, live}:
+            with open(os.path.join(d, "metrics.jsonl"), "a") as f:
+                f.write(json.dumps(rec) + "\n")
 
     gpu = {"gpu": torch.cuda.get_device_name(0)} if dev == "cuda" else {}
     log({"event": "start", **{k: v for k, v in vars(args).items() if isinstance(v, (int, float, str, bool))},
@@ -267,19 +279,24 @@ def run(args):
         model.train()
         return float(np.mean(losses))
 
+    # fixed val windows spread over the split (different videos / genres), the same at every check
+    sample_idx = np.linspace(0, len(val) - 1, 8).round().astype(int).tolist()
+
     def sample_val(n=8):
         net = ema if ema is not None else model
         g = Generator(net, cfg, lo, hi, dev)
-        b = next(iter(torch.utils.data.DataLoader(val, batch_size=n, shuffle=False)))
+        b = next(iter(torch.utils.data.DataLoader(torch.utils.data.Subset(val, sample_idx[:n]), batch_size=n)))
         real = b["motion"].to(dev)
         state = torch.random.get_rng_state()
         torch.manual_seed(0)
         m = g.generate(b["audio"], b["category"], first=norm.norm(real[:, 0]), steps=args.sample_steps)
         torch.random.set_rng_state(state)
-        os.makedirs(os.path.join(args.out, "samples"), exist_ok=True)
-        for i in range(min(n, 4)):
-            name = f"step{step:06d}_{b['video_id'][i]}_{int(b['start'][i]):04d}.npz"
-            np.savez(os.path.join(args.out, "samples", name), motion=m[i].cpu().numpy())
+        for d in {args.out, live}:
+            os.makedirs(os.path.join(d, "samples"), exist_ok=True)
+            for i in range(min(n, 4)):
+                name = f"step{step:06d}_{b['video_id'][i]}_{int(b['start'][i]):04d}.npz"
+                np.savez(os.path.join(d, "samples", name), motion=m[i].cpu().numpy(), real=real[i].cpu().numpy(),
+                         video_id=b["video_id"][i], start=int(b["start"][i]), step=step)
         model.train()
         return {"speed_ratio": joint_speed(m) / max(joint_speed(real), 1e-8),
                 "contact_rate": (m[..., CONTACT] > 0.5).float().mean().item(),
@@ -316,6 +333,10 @@ def run(args):
             log({"val_loss": validate()})
         if step % args.sample_every == 0 or step == args.steps:
             log({"sample": sample_val()})
+        if snapshot_every and (step % snapshot_every == 0 or step == args.steps):
+            os.makedirs(os.path.join(live, "snapshots"), exist_ok=True)
+            save_bundle(os.path.join(live, "snapshots", f"step{step:06d}.pt"), ema if ema is not None else model,
+                        cfg, lo, hi, stats, categories)
         if ckpt and (step % args.val_every == 0 or step == args.steps):
             os.makedirs(args.checkpoint_dir, exist_ok=True)
             torch.save({"model": model.state_dict(), "opt": opt.state_dict(), "sched": sched.state_dict(),
