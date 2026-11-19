@@ -1,0 +1,170 @@
+"""Evaluate a trained model on held-out music (Task 4): realism, diversity, rhythm, physics.
+
+    python -m beat2body evaluate --checkpoint runs/<job>/model.pt              # val split
+    python -m beat2body evaluate --checkpoint runs/<job>/model.pt --split test # final numbers only
+
+For every window of the split (150 frames, the clips' first 5 s), the model generates a dance for
+that window's music and genre. Metrics, adapted to 2D from AIST++ / Bailando / EDGE:
+
+    FID_k   Frechet distance between generated and real *kinetic* features (per joint: mean
+            horizontal and vertical speed^2, mean |acceleration|), lower = more realistic dynamics
+    FID_p   the same for *pose* features (per joint: mean and std of the pelvis-centred x, y)
+    Div_k / Div_p   mean pairwise distance between generated windows (higher = more varied)
+    BAS     beat alignment: for each music beat, exp(-d^2 / 2 sigma^2) to the nearest kinematic beat
+            (local minimum of the smoothed joint speed); sigma = 3 frames
+    PFC     EDGE's physical foot contact score: mean over frames of root acceleration x the slower
+            ankle's speed (each normalized by its max); lower = fewer sliding / floating feet
+    speed   mean joint speed relative to the real val windows (1 = same energy, ~0 = frozen)
+
+Features are standardized with the real val windows' mean / std before FID and diversity.
+Reference rows give the scale: real train windows vs real val ("Real (train)"), the real val
+windows themselves, real val dances paired with other songs (BAS only), and a frozen mean pose.
+"""
+import json
+import os
+
+import numpy as np
+import torch
+from scipy import linalg
+from scipy.ndimage import gaussian_filter1d
+from scipy.signal import argrelextrema
+
+from beat2body.data import ANKLES, CONTACT, DanceClips
+from beat2body.model.diffusion import absolute_joints
+
+DOC = __doc__
+
+
+def add_args(p):
+    p.add_argument("--checkpoint", required=True)
+    p.add_argument("--split", default="val", choices=["val", "test"])
+    p.add_argument("--guidance", type=float, default=None, help="default: the trained value")
+    p.add_argument("--steps", type=int, default=50, help="DDIM steps")
+    p.add_argument("--batch-size", type=int, default=64)
+    p.add_argument("--max-windows", type=int, default=None, help="evaluate on fewer windows (quick check)")
+    p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--device", default="auto")
+
+
+# ---------------------------------------------------------------------------
+# features and metrics on absolute joints (N, L, 17, 2), torso lengths
+# ---------------------------------------------------------------------------
+def kinetic_features(j):
+    v = np.diff(j, axis=1)
+    a = np.diff(v, axis=1)
+    return np.concatenate([(v[..., 0] ** 2).mean(1), (v[..., 1] ** 2).mean(1),
+                           np.linalg.norm(a, axis=-1).mean(1)], axis=1)              # (N, 51)
+
+
+def pose_features(j):
+    rel = j - j[:, :, [11, 12]].mean(2, keepdims=True)                              # pelvis-centred
+    return np.concatenate([rel.mean(1).reshape(len(j), -1), rel.std(1).reshape(len(j), -1)], axis=1)   # (N, 68)
+
+
+def frechet(a, b):
+    mu1, mu2 = a.mean(0), b.mean(0)
+    s1, s2 = np.cov(a, rowvar=False), np.cov(b, rowvar=False)
+    covmean, _ = linalg.sqrtm(s1 @ s2, disp=False)
+    if np.iscomplexobj(covmean):
+        covmean = covmean.real
+    return float(((mu1 - mu2) ** 2).sum() + np.trace(s1 + s2 - 2 * covmean))
+
+
+def diversity(f, n_pairs=2000, seed=0):
+    rng = np.random.default_rng(seed)
+    i, k = rng.integers(0, len(f), n_pairs), rng.integers(0, len(f), n_pairs)
+    keep = i != k
+    return float(np.linalg.norm(f[i[keep]] - f[k[keep]], axis=1).mean())
+
+
+def kinematic_beats(j, sigma=5):
+    speed = gaussian_filter1d(np.linalg.norm(np.diff(j, axis=0), axis=-1).mean(1), sigma)
+    return argrelextrema(speed, np.less)[0]
+
+
+def bas(j, music_beats, sigma=3.0):
+    mb = music_beats[(music_beats >= 0) & (music_beats < len(j) - 1)]
+    kb = kinematic_beats(j)
+    if len(mb) == 0 or len(kb) == 0:
+        return 0.0
+    d = np.abs(mb[:, None] - kb[None, :]).min(1)
+    return float(np.exp(-d ** 2 / (2 * sigma ** 2)).mean())
+
+
+def pfc(j):
+    """EDGE's PFC in 2D: root acceleration x min ankle speed, each normalized by its max."""
+    root = j[:, [11, 12]].mean(1)
+    acc = np.linalg.norm(np.diff(root, n=2, axis=0), axis=-1)
+    foot_v = np.linalg.norm(np.diff(j[:, list(ANKLES)], axis=0), axis=-1)[1:]          # (L-2, 2)
+    acc = acc / max(acc.max(), 1e-8)
+    foot_v = foot_v / np.maximum(foot_v.max(0, keepdims=True), 1e-8)
+    return float((acc * foot_v.min(1)).mean())
+
+
+def mean_speed(j):
+    return float(np.linalg.norm(np.diff(j, axis=1), axis=-1).mean())
+
+
+def score(name, j, real_j, beats, z_k, z_p, contact=None):
+    fk, fp = (kinetic_features(j) - z_k[0]) / z_k[1], (pose_features(j) - z_p[0]) / z_p[1]
+    rk, rp = (kinetic_features(real_j) - z_k[0]) / z_k[1], (pose_features(real_j) - z_p[0]) / z_p[1]
+    row = {"name": name, "FID_k": frechet(fk, rk), "FID_p": frechet(fp, rp), "Div_k": diversity(fk),
+           "Div_p": diversity(fp), "BAS": float(np.mean([bas(x, b) for x, b in zip(j, beats)])),
+           "PFC": float(np.mean([pfc(x) for x in j])), "speed": mean_speed(j) / mean_speed(real_j)}
+    if contact is not None:
+        row["contact"] = float(contact)
+    return row
+
+
+def windows(ds, n=None):
+    """Deterministic windows of a split: absolute joints, music, genre, beat frames, contacts."""
+    items = [ds[i] for i in range(len(ds) if n is None else min(n, len(ds)))]
+    motion = torch.stack([x["motion"] for x in items])
+    beats = [torch.nonzero(x["beats"]).flatten().numpy().astype(float) for x in items]
+    return motion, torch.stack([x["audio"] for x in items]), torch.stack([x["category"] for x in items]), beats
+
+
+def run(args):
+    from beat2body.train import load_generator
+    dev = ("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu") \
+        if args.device == "auto" else args.device
+    gen, bundle = load_generator(args.checkpoint, dev)
+    cfg = bundle["config"]
+    kw = dict(seq_len=cfg["seq_len"], feature_set=cfg["feature_set"], stats=bundle["audio_stats"], augment=False)
+    real_m, audio, genre, beats = windows(DanceClips(cfg["tool"], args.split, **kw), args.max_windows)
+    train_m, _, _, train_beats = windows(DanceClips(cfg["tool"], "train", **kw), len(real_m))
+    real = absolute_joints(real_m).numpy()
+    z_k = (kinetic_features(real).mean(0), kinetic_features(real).std(0) + 1e-8)
+    z_p = (pose_features(real).mean(0), pose_features(real).std(0) + 1e-8)
+
+    torch.manual_seed(args.seed)
+    out = []
+    for s in range(0, len(audio), args.batch_size):
+        out.append(gen.generate(audio[s:s + args.batch_size], genre[s:s + args.batch_size],
+                                first=gen.normalizer.norm(real_m[s:s + args.batch_size, 0].to(dev)),
+                                guidance=args.guidance, steps=args.steps).cpu())
+    gen_m = torch.cat(out)
+    generated = absolute_joints(gen_m).numpy()
+    static = np.repeat(real.mean((0, 1), keepdims=True), len(real), 0).repeat(real.shape[1], 1)
+    static = static + 1e-4 * np.random.default_rng(0).standard_normal(static.shape)
+    shuffled = [beats[i] for i in np.random.default_rng(1).permutation(len(beats))]
+
+    rows = [
+        score(f"Model ({cfg['model']}, {sum(p.numel() for p in gen.model.parameters()) / 1e6:.1f}M)",
+              generated, real, beats, z_k, z_p, (gen_m[..., CONTACT] > 0.5).float().mean()),
+        score("Real (train windows)", absolute_joints(train_m).numpy(), real, train_beats, z_k, z_p),
+        score(f"Real ({args.split}) itself", real, real, beats, z_k, z_p, real_m[..., CONTACT].mean()),
+        score("Real dance + other music", real, real, shuffled, z_k, z_p),
+        score("Frozen mean pose", static, real, beats, z_k, z_p),
+    ]
+    print(f"\n{args.split}: {len(real)} windows of {cfg['seq_len']} frames; checkpoint {args.checkpoint}")
+    cols = ["FID_k", "FID_p", "Div_k", "Div_p", "BAS", "PFC", "speed"]
+    print(f"{'':34s}" + "".join(f"{c:>9s}" for c in cols))
+    for r in rows:
+        print(f"{r['name']:34s}" + "".join(f"{r[c]:9.3f}" for c in cols))
+    print("FID: lower = closer to real; Div: higher = more varied; BAS: higher = more on the beat;"
+          " PFC: lower = less foot sliding; speed: 1 = as energetic as real")
+    path = os.path.join(os.path.dirname(os.path.abspath(args.checkpoint)), f"eval_{args.split}.json")
+    with open(path, "w") as f:
+        json.dump({"split": args.split, "windows": len(real), "guidance": args.guidance, "rows": rows}, f, indent=1)
+    print(f"wrote {path}")

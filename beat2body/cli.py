@@ -16,6 +16,7 @@ Training (needs torch):
     data          check the PyTorch data loader (shapes, NaNs, audio stats, speed)
     train         train the diffusion model or the GRU baseline (locally or on SageMaker)
     sample        generate a dance for a dataset video's music with a trained model
+    evaluate      score a trained model on val / test music (FID, diversity, beats, foot contact)
     aws           SageMaker: upload-data | submit | status | download
 Inspection:
     render        stick-figure video of real or generated keypoints
@@ -47,8 +48,9 @@ def _commands():
         commands["train"] = train
         commands["sample"] = SimpleNamespace(DOC=train.SAMPLE_DOC, add_args=train.add_sample_args,
                                              run=train.run_sample)
-        from beat2body import aws
+        from beat2body import aws, evaluate
         commands["aws"] = aws
+        commands["evaluate"] = evaluate
     except ImportError:
         pass
     return commands, pose_pkg
