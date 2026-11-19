@@ -62,12 +62,18 @@ research only and must be cited (Tsuchida et al., ISMIR 2019); see its
 │   ├── skeleton.py         # COCO-17 joints, tool joint mappings
 │   ├── video.py            # fixed-fps frame reading, drawing, mp4 writing
 │   ├── data.py             # PyTorch Dataset / DataLoader for training
+│   ├── model/              # EDGE-style diffusion (edge.py, diffusion.py), GRU baseline, Adan
+│   ├── train.py            # training (local, Colab, SageMaker), `sample`
+│   ├── evaluate.py         # FID_k/p, diversity, BAS, PFC, speed, BeatPow, drift detector
+│   ├── report.py           # shareable videos of a run
+│   ├── aws.py              # SageMaker: upload-data, submit, status, download
 │   ├── pose/               # 4.3 pose tools: dwpose.py, mediapipe.py, openpose.py
 │   ├── prep/               # 4.2/4.4-4.7: frames, clean, audio, clips (+ split), all, hf
 │   └── render.py           # stick-figure videos of real or generated keypoints
 ├── tests/                  # pytest
-├── scripts/                # colab_build_openpose.sh
-├── docs/                   # pipeline_2d.md, 3d.md
+├── scripts/                # colab_train.py (one-cell Colab trainer), colab_build_openpose.sh
+├── docs/                   # pipeline_2d.md, colab.md, 3d.md
+├── reports/                # progress reports with metrics, charts and generated videos
 ├── 2d/                     # data root
 │   ├── raw_video/<genre>/  # AIST source videos (10 genres x 21, tracked in git)
 │   ├── categories.json     # genre -> embedding index (tracked)
@@ -84,6 +90,10 @@ Run `ruff check beat2body` and `pytest` before committing.
 - [x] Code organized as the `beat2body` package; held-out-song test split
 - [x] New split + dataset cards published (public, SizheZ03); beat labels fixed (published AIST tempos)
 - [x] PyTorch data loader (`beat2body.data`)
-- [ ] 2D baseline model (audio encoder + category embedding + GRU decoder)
-- [ ] 2D training (AWS) + evaluation (beat alignment, genre consistency, diversity)
+- [x] 2D model: EDGE replica (diffusion transformer) + GRU baseline
+- [x] 2D training (AWS SageMaker, Colab) + evaluation (FID, diversity, BAS, PFC, speed, BeatPow, drift)
+- [x] Body-size drift fixed (per-video scale + projected bone-length loss)
+- [ ] Energy: generated dances miss movement on the beat; fixes being tested
+  ([latest report](reports/2026-11-19_progress/README.md))
+- [ ] More data: AIST basic dances (1,200 videos); genre-accuracy metric; full-size model
 - [ ] 3D phase
