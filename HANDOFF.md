@@ -189,6 +189,56 @@ Proposal PDF: `reports/proposal/Beat2Body_Proposal.pdf`.
 7. 3D stage on AIST++ (official features, comparable to EDGE's numbers); other cameras c02–c09 as 2D
    augmentation; OpenPose / MediaPipe on the basic dances for the pose-tool comparison.
 
+### Model design experiments
+
+Prototype separate guidance with an existing checkpoint, then train a beat-relative attention variant
+at 7.1M. If timing improves and torso variation remains high, try the kinematic decoder. Add phrase
+planning if the 20-second samples still repeat short movements or lack clear transitions.
+
+1. **Separate music and genre guidance.** Training already drops music and genre independently, while
+   sampling applies one weight to the joint conditional prediction. In `EDGEDiffusion.predict`, combine
+   three predictions as `uncond + w_genre * (genre_only - uncond) + w_music * (joint - genre_only)`.
+   Setting both weights equal reproduces the current guidance formula. With a fixed seed, vary one
+   weight at a time and check whether motion responds to track changes and requested genre changes.
+   [Diffusion guidance](beat2body/model/diffusion.py#L187)
+2. **Add beat-relative cross-attention.** Keep the existing beat-phase features and give motion queries
+   a learned attention bias based on their signed distance to nearby audio beats in fractions of a beat.
+   Allow different heads to learn anticipation, delay, and offbeat accents. Mask the beat information
+   whenever the music condition is dropped. Compare against the same 7.1M backbone and test whether
+   accents follow a deliberately shifted beat grid at fixed tempo, genre, and seed. Report BeatPow
+   alongside timing so an increase in movement alone does not count as better alignment.
+   [Denoiser](beat2body/model/edge.py#L73) · [ChoreDiffusion](https://doi.org/10.3390/info17080808)
+3. **Decode a connected skeleton.** Predict pelvis translation and bone directions through a kinematic
+   tree, with a body scale shared across the sequence and per-frame projected-length changes to preserve
+   foreshortening. Check torso and limb variation on long clips and inspect break floor work at matched
+   motion energy. As a follow-up, give ankle contact its own supervised head and use confidence-masked
+   target contacts to weight the skating loss. The current skating gate depends on the model's own
+   thresholded contact output, and ankle speed is an image-plane proxy for contact.
+   [Motion representation](beat2body/data.py#L121) · [Bone and contact losses](beat2body/model/diffusion.py#L140)
+4. **Plan motion across phrases.** Add a lightweight module that reads the full audio excerpt and predicts
+   a coarse root trajectory and pose anchors every few beats. Condition the existing five-second denoising
+   windows on that shared plan. Compare 20-second clips for phrase transitions and repetition, and measure
+   overlap disagreement before cross-fading.
+   [Long-form sampler](beat2body/train.py#L499) · [Lodge](https://openaccess.thecvf.com/content/CVPR2024/html/Li_Lodge_A_Coarse_to_Fine_Diffusion_Network_for_Long_Dance_CVPR_2024_paper.html)
+
+#### Implemented (2026-11-19)
+
+- **Separate guidance** (item 1): `EDGEDiffusion.predict(..., music_guidance=w_music)` with `guidance` as the genre
+  weight; the conditional / unconditional passes are batched into one forward call. Flags `--music-guidance`,
+  `--genre-guidance` on `sample` and `evaluate` (omitted = the single weight as before; equal weights give the same
+  output, tested).
+- **Beat-relative cross-attention** (item 2): `train --beat-attn` (`--beat-bins 8`, `--beat-range 2`). Per layer and
+  head, a learned bias on each music frame by its offset from the motion frame in beats (1/8-beat bins, ±2 beats)
+  plus a bias by the music frame's beat phase. The beat count is unwrapped from the beat-phase sin / cos already in
+  the music input, so no data change. Zero-initialized (= the plain model at step 0); 0 where music is dropped,
+  outside the beat grid and for the time / genre tokens. Old checkpoints load unchanged.
+- **`python -m beat2body probe`**: `guidance` (sweeps one weight at a time with fixed noise: change in motion when
+  the track is swapped / another genre is requested, nearest-centroid genre accuracy, beat locking, FID_k, BeatPow)
+  and `beat-shift` (moves the beat phase + EDGE beat one-hot by 0.25 / 0.5 beat at fixed tempo, genre, seed and
+  reports how far the motion accents move: follow = 1 means they follow the grid; BeatPow alongside).
+- **Runs** (7.1M, matched to 2.3 and 2.1b except `--beat-attn`; same seed):
+  3.1 `ba-pure-c4799d97` (= 2.3 + beat attention), 3.2 `ba-co-5283a42c` (= 2.1b + beat attention).
+
 ## 8. Operations
 
 **AWS** (account 670682107687, us-east-1; role `SageMakerTraining-beat2body`; bucket
