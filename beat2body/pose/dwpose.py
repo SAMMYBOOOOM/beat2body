@@ -43,12 +43,15 @@ def build_model(device):
     if device.startswith("cuda"):
         # Load the CUDA / cuDNN libraries before creating the sessions; without this
         # onnxruntime can silently fall back to the CPU.
-        try:
-            import torch  # noqa: F401  (its wheels ship the CUDA / cuDNN libraries)
-        except ImportError:
-            pass
         if hasattr(ort, "preload_dlls"):
+            # onnxruntime's own CUDA / cuDNN (pip install "onnxruntime-gpu[cuda,cudnn]"); loaded before
+            # anything else so that a different CUDA version (e.g. torch's) cannot shadow them
             ort.preload_dlls()
+        else:
+            try:
+                import torch  # noqa: F401  (its wheels ship the CUDA / cuDNN libraries)
+            except ImportError:
+                pass
     det = hf_hub_download("RedHash/DWPose", "yolox_l.onnx")
     pose = hf_hub_download("RedHash/DWPose", "dw-ll_ucoco_384.onnx")
     model = Wholebody(model_det=det, model_pose=pose, device=device)

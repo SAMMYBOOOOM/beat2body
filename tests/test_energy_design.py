@@ -26,3 +26,15 @@ def test_energy_loss_detects_damped_motion():
     assert energy_loss(0.4 * ta, ta, valid, w) > 0.1          # same phase, too small
     shifted = torch.roll(ta, 7, dims=1)                         # different phase, same energy
     assert energy_loss(shifted, ta, valid, w) < 0.02
+
+
+def test_smoothed_energy_ignores_jitter():
+    torch.manual_seed(0)
+    t = torch.linspace(0, 6.28 * 5, 150)
+    ta = torch.zeros(1, 150, 17, 2)
+    ta[..., 0] = torch.sin(3 * t)[None, :, None] * 0.3
+    jitter = 0.05 * torch.randn_like(ta)                 # pure jitter, raw speed close to the real speed
+    valid, w = torch.ones(1, 150, 17, dtype=torch.bool), torch.ones(1)
+    raw = energy_loss(jitter, ta, valid, w, smooth=0)
+    smooth = energy_loss(jitter, ta, valid, w, smooth=2.0)
+    assert smooth > raw + 1.0                            # once smoothed, jitter no longer passes for energy

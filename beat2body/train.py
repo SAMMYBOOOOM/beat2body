@@ -122,6 +122,9 @@ def add_args(p):
                    help="what the network predicts: x0 (EDGE) or v (x0 derived from it; skip path at low noise)")
     g.add_argument("--energy-weight", type=float, default=0.0,
                    help="phase-invariant loss on each joint's speed and amplitude per window; 0 = off (EDGE)")
+    g.add_argument("--energy-smooth", type=float, default=2.0,
+                   help="energy loss: speed measured on motion blurred over this many frames (jitter does not "
+                        "count); 0 = raw speed (the first version, which the model met partly with jitter)")
     g = p.add_argument_group("augmentation (train split only)")
     g.add_argument("--extra-tools", nargs="*", choices=TOOLS, default=None,
                    help="other pose tools' keypoints of the same videos as extra training views")
@@ -153,7 +156,7 @@ def add_args(p):
 
 CFG_KEYS = ("model", "tool", "feature_set", "scale_norm", "bone_weight", "min_snr", "seq_len", "d_model", "ff",
             "layers", "heads", "dropout", "gru_hidden", "gru_layers", "diffusion_steps", "music_drop", "genre_drop",
-            "guidance", "loss_weights", "normalizer", "param", "energy_weight")
+            "guidance", "loss_weights", "normalizer", "param", "energy_weight", "energy_smooth")
 
 
 def build_model(cfg):
@@ -168,7 +171,8 @@ def build_model(cfg):
 def make_diffusion(net, normalizer, cfg):
     return EDGEDiffusion(net, normalizer, cfg["diffusion_steps"], cfg["music_drop"], cfg["genre_drop"],
                          cfg["guidance"], tuple(cfg["loss_weights"]), cfg.get("bone_weight", 0.0),
-                         cfg.get("min_snr", 0.0), cfg.get("param", "x0"), cfg.get("energy_weight", 0.0))
+                         cfg.get("min_snr", 0.0), cfg.get("param", "x0"), cfg.get("energy_weight", 0.0),
+                         cfg.get("energy_smooth", 0.0))
 
 
 class Generator:

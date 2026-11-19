@@ -5,6 +5,8 @@
     python -m beat2body aws status [JOB]          # latest beat2body job if JOB is omitted
     python -m beat2body aws download JOB          # model.pt, metrics, samples -> runs/JOB/
     python -m beat2body aws download JOB --live   # progress of a running job (metrics, samples, snapshots)
+    python -m beat2body aws pose --videos ids.txt --shards 4 --instances ml.g6.xlarge ml.g6.xlarge:spot ...
+    python -m beat2body aws pose-download PREFIX...   # DWPose raw outputs -> <data>/keypoints/<category>/
 
 Arguments after `--` are passed to `beat2body train` inside the job. Defaults: bucket
 beat2body-<account>-<region>, role SageMakerTraining-beat2body, PyTorch 2.9 training image
@@ -57,12 +59,24 @@ def add_args(p):
     dl.add_argument("--live", action="store_true",
                     help="also / only (while running) the synced checkpoint folder: metrics, samples, snapshots")
     dl.add_argument("--no-snapshots", action="store_true", help="with --live: skip the model snapshots")
-    for sp in (up, sb, st, dl):
+    po = sub.add_parser("pose", help="DWPose on AWS GPUs for a list of AIST video ids (sharded jobs)")
+    po.add_argument("--videos", required=True, help="text file with one AIST video id per line")
+    po.add_argument("--shards", type=int, default=1)
+    po.add_argument("--instances", nargs="+", default=["ml.g6.xlarge"],
+                    help="one per shard (cycled); append :spot for managed spot, e.g. ml.g6.xlarge:spot")
+    po.add_argument("--max-hours", type=float, default=6.0)
+    po.add_argument("--name", default="pose")
+    po.add_argument("--only", type=int, nargs="*", default=None, help="submit only these shard numbers")
+    po.add_argument("--dry-run", action="store_true")
+    pd = sub.add_parser("pose-download", help="download pose jobs' raw outputs (also while they run)")
+    pd.add_argument("prefixes", nargs="+", help="checkpoint prefixes printed by `aws pose`")
+    for sp in (up, sb, st, dl, po, pd):
         sp.add_argument("--bucket", default=None)
 
 
 def run(args):
-    {"upload-data": upload_data, "submit": submit, "status": status, "download": download}[args.aws_cmd](args)
+    {"upload-data": upload_data, "submit": submit, "status": status, "download": download, "pose": pose,
+     "pose-download": pose_download}[args.aws_cmd](args)
 
 
 def _clients():
@@ -133,17 +147,6 @@ def train_hyperparameters(train_args):
 
 
 def submit(args):
-    from sagemaker.core.helper.session_helper import Session
-    from sagemaker.core.training.configs import (
-        CheckpointConfig,
-        Compute,
-        InputData,
-        OutputDataConfig,
-        SourceCode,
-        StoppingCondition,
-    )
-    from sagemaker.train import ModelTrainer
-
     session, account = _clients()
     bucket = _bucket(args, account)
     s3 = session.client("s3")
@@ -166,27 +169,88 @@ def submit(args):
     if args.dry_run:
         print("[aws] dry run: nothing submitted")
         return
+    job = _launch(session, bucket, prefix, args.instance, args.spot, max_runtime, hps,
+                  [("training", f"s3://{bucket}/data/{args.tool}/")])
+    print(f"[aws] submitted {job}\n      python -m beat2body aws status {job}")
+
+
+def _launch(session, bucket, prefix, instance, spot, max_runtime, hps, inputs, extra_files=None):
+    """Start one training job running sagemaker_entry.py; extra_files {name: text} go next to it."""
+    from sagemaker.core.helper.session_helper import Session
+    from sagemaker.core.training.configs import (
+        CheckpointConfig,
+        Compute,
+        InputData,
+        OutputDataConfig,
+        SourceCode,
+        StoppingCondition,
+    )
+    from sagemaker.train import ModelTrainer
+    src = _stage_source()
+    for name, text in (extra_files or {}).items():
+        with open(os.path.join(src, name), "w") as f:
+            f.write(text)
     sm = session.client("sagemaker")
     trainer = ModelTrainer(
         training_image=IMAGE,
-        source_code=SourceCode(source_dir=_stage_source(), entry_script="sagemaker_entry.py"),
-        compute=Compute(instance_type=args.instance, instance_count=1, volume_size_in_gb=30,
-                        enable_managed_spot_training=args.spot),
+        source_code=SourceCode(source_dir=src, entry_script="sagemaker_entry.py"),
+        compute=Compute(instance_type=instance, instance_count=1, volume_size_in_gb=30,
+                        enable_managed_spot_training=spot),
         output_data_config=OutputDataConfig(s3_output_path=f"s3://{bucket}/output/"),
         stopping_condition=StoppingCondition(max_runtime_in_seconds=max_runtime,
-                                             max_wait_time_in_seconds=2 * max_runtime if args.spot else None),
+                                             max_wait_time_in_seconds=2 * max_runtime if spot else None),
         checkpoint_config=CheckpointConfig(s3_uri=f"s3://{bucket}/checkpoints/{prefix}/"),
         hyperparameters={k: str(v) if not isinstance(v, bool) else v for k, v in hps.items()},
         sagemaker_session=Session(boto_session=session, sagemaker_client=sm, default_bucket=bucket,
                                   default_bucket_prefix="code"),
-        role=role,
+        role=f"arn:aws:iam::{session.client('sts').get_caller_identity()['Account']}:role/{ROLE_NAME}",
         base_job_name=prefix,
     )
-    trainer.train(input_data_config=[InputData(channel_name="training",
-                                               data_source=f"s3://{bucket}/data/{args.tool}/")],
+    trainer.train(input_data_config=[InputData(channel_name=c, data_source=uri) for c, uri in inputs] or None,
                   wait=False, logs=False)
-    job = _find_job(sm, prefix)
-    print(f"[aws] submitted {job}\n      python -m beat2body aws status {job}")
+    return _find_job(sm, prefix)
+
+
+def pose(args):
+    session, account = _clients()
+    bucket = _bucket(args, account)
+    with open(args.videos) as f:
+        ids = [x.strip() for x in f if x.strip()]
+    stamp = uuid.uuid4().hex[:6]
+    for i in range(args.shards):
+        if args.only is not None and i not in args.only:
+            continue
+        inst = args.instances[i % len(args.instances)]
+        instance, spot = inst.split(":")[0], inst.endswith(":spot")
+        prefix = f"{JOB_PREFIX}-{args.name}-{stamp}-s{i}of{args.shards}"
+        n = len(ids[i::args.shards])
+        print(f"  shard {i}/{args.shards}: {n} videos on {instance}{' (spot)' if spot else ''}  "
+              f"checkpoints s3://{bucket}/checkpoints/{prefix}/")
+        if args.dry_run:
+            continue
+        job = _launch(session, bucket, prefix, instance, spot, int(args.max_hours * 3600),
+                      {"task": "pose", "shard": f"{i}/{args.shards}"}, [], {"pose_videos.txt": "\n".join(ids)})
+        print(f"[aws] submitted {job}")
+    if args.dry_run:
+        print("[aws] dry run: nothing submitted")
+
+
+def pose_download(args):
+    session, account = _clients()
+    bucket = _bucket(args, account)
+    s3 = session.client("s3")
+    n = 0
+    for prefix in args.prefixes:
+        base = f"checkpoints/{prefix}/keypoints/"
+        for page in s3.get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix=base):
+            for o in page.get("Contents", []):
+                dst = os.path.join(paths.keypoints_dir(), o["Key"][len(base):])
+                if os.path.exists(dst) and os.path.getsize(dst) == o["Size"]:
+                    continue
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                s3.download_file(bucket, o["Key"], dst)
+                n += 1
+    print(f"[aws] {n} new raw pose outputs -> {paths.rel(paths.keypoints_dir())}")
 
 
 def _find_job(sm, prefix, timeout=60):

@@ -83,6 +83,42 @@ def allocate(n, ratios):
 
 
 def split_videos(videos, by="video", seed=0, test_songs=1, val_ratio=0.15, test_ratio=0.15):
+    """Advanced dances (and non-AIST videos) are split exactly as before (`_split_main`), so adding
+    basic dances never changes their split. Basic dances (sBM) follow it: a basic dance on a held-out
+    test song goes to test; the rest are split into train / val by routine (all tempo versions of one
+    dancer's routine stay together), with the same val ratio."""
+    main = [(c, v) for c, v in videos if aist.situation(v) != "sBM"]
+    basic = [(c, v) for c, v in videos if aist.situation(v) == "sBM"]
+    splits = _split_main(main, by, seed, test_songs, val_ratio, test_ratio) if main else {}
+    if not basic:
+        return splits
+    rng = random.Random(seed + 1)
+    by_cat = defaultdict(list)
+    for cat, vid in basic:
+        by_cat[cat].append(vid)
+    for cat, vids in sorted(by_cat.items()):
+        held = {aist.music_id(v) for (c, v), x in splits.items() if c == cat and x == "test"}
+        rest = []
+        for v in sorted(vids):
+            if aist.music_id(v) in held:
+                splits[(cat, v)] = "test"
+            else:
+                rest.append(v)
+        groups = defaultdict(list)
+        for v in rest:
+            groups[aist.routine_id(v)].append(v)
+        units = [g for _, g in sorted(groups.items())]
+        rng.shuffle(units)
+        i = 0
+        for split, c in zip(SPLITS, allocate(len(units), [1 - val_ratio, val_ratio, 0.0])):
+            for unit in units[i:i + c]:
+                for v in unit:
+                    splits[(cat, v)] = split
+            i += c
+    return splits
+
+
+def _split_main(videos, by="video", seed=0, test_songs=1, val_ratio=0.15, test_ratio=0.15):
     """videos: [(category, video_id)] -> {(category, video_id): split}.
 
     Per category: `test_songs` whole songs go to test; the remaining videos are grouped by

@@ -52,3 +52,21 @@ def test_group_never_spans_splits():
         for (cat, v), s in sp.items():
             assert seen.setdefault((cat, key(v)), s) == s
         assert set(sp.values()) == {"train", "val", "test"}
+
+
+def test_basic_dances_follow_main_split():
+    main = [("break", f"gBR_sFM_c01_d{d:02d}_mBR{m}_ch{d * 10 + m:02d}") for d in (4, 5, 6) for m in range(6)]
+    basic = [("break", f"gBR_sBM_c01_d{d:02d}_mBR{m}_ch{c:02d}") for d in (4, 5, 6) for m in range(6)
+             for c in range(1, 11)]
+    before = split_videos(main)
+    after = split_videos(main + basic)
+    assert all(after[k] == v for k, v in before.items())          # adding basic dances changes nothing
+    held = {k[1].split("_")[4] for k, v in before.items() if v == "test"}
+    for k, v in after.items():
+        if "sBM" in k[1]:
+            assert (v == "test") == (k[1].split("_")[4] in held)
+    seen = {}
+    for (_, v), s in after.items():
+        if "sBM" in v and s != "test":
+            seen.setdefault(v.split("_")[3] + v[-5:], set()).add(s)
+    assert all(len(s) == 1 for s in seen.values())               # a routine never spans train and val

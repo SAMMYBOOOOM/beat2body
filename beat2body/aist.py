@@ -1,8 +1,12 @@
 """AIST Dance Video Database naming and the list of videos / categories.
 
-Video ids look like gLH_sFM_c01_d16_mLH0_ch01: genre LH, advanced choreography (sFM),
-front camera (c01), dancer d16, song mLH0, choreography 01. Each genre has 3 dancers
-and 6 songs; every dancer dances to all 6 songs of their genre.
+Video ids look like gLH_sFM_c01_d16_mLH0_ch01: genre LH, situation sFM, front camera (c01), dancer d16,
+song mLH0, choreography 01. Situations used here:
+    sFM  advanced dance: each dancer's own choreography (~52 s); 3 dancers x 7 per genre (21 videos)
+    sBM  basic dance: 10 basic routines (ch01..ch10) per dancer, each danced to 4 of the genre's songs
+         (~23 s); 120 videos per genre. The same routine on different songs = the same choreography
+         at different tempos.
+Each genre has 3 dancers and 6 songs.
 """
 import glob
 import json
@@ -31,6 +35,19 @@ def music_id(video_id):
     """'mLH0' for gLH_sFM_c01_d16_mLH0_ch01, None for non-AIST names."""
     m = re.search(r"_(m[A-Z]{2}\d)_", video_id)
     return m.group(1) if m else None
+
+
+def situation(video_id):
+    """'sFM' / 'sBM' / ... for AIST names, None otherwise."""
+    m = re.search(r"_(s[A-Z]{2})_", video_id)
+    return m.group(1) if m else None
+
+
+def routine_id(video_id):
+    """Basic dances: 'd04_ch01' (dancer + routine, shared by the routine's versions on different songs);
+    other videos: the video id itself."""
+    d, m = dancer_id(video_id), re.search(r"_(ch\d\d)$", video_id)
+    return f"{d}_{m.group(1)}" if situation(video_id) == "sBM" and d and m else video_id
 
 
 def music_bpm(video_id):
