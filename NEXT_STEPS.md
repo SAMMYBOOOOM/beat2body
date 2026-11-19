@@ -124,34 +124,33 @@ run `ruff check beat2body` and `pytest`.
 - [x] Check: `python -m beat2body data --tool dwpose` → all splits load, no NaNs, 10 genres, train audio
   mean 0 / std 1; 2155 train clips in memory, 0.15 s per epoch with `num_workers=0`. Tests in `tests/test_data.py`.
 
-### Task 3 — Baseline model and training on AWS (`beat2body/model.py`, `beat2body/train.py`, new)
+### Task 3 — Model and training on AWS (code ready, not launched)
 
-This follows `docs/pipeline_2d.md` §2 and §6. On AWS the machine only needs
-`pip install -e ".[data]"` and `python -m beat2body hf download --tool dwpose`.
-
-- **Audio encoder:** a 2-layer 1D CNN or a 2-layer Transformer (d = 128, 4 heads) over the mel
-  bands plus onset, giving 65 channels per frame.
-- **Category conditioning:** an embedding with 10 categories and dimension 16, injected at every
-  decoder step. The number of categories is read from `categories.json` and stored in the
-  checkpoint.
-- **Decoder:** a GRU (1–2 layers, hidden 256) that predicts frame $t$ from the audio features at
-  $t$ and the pose at $t-1$. The output head is linear, giving $17 \times 2$ values per frame.
-- **Losses**, all masked by `valid`:
-
-$$
-\mathcal{L} = \frac{\sum_{t,j} v_{t,j}\,\lVert \hat{x}_{t,j}-x_{t,j}\rVert^2}{\sum_{t,j} v_{t,j}}
-+ \lambda_v \frac{\sum_{t,j} v_{t,j}v_{t-1,j}\,\lVert \Delta\hat{x}_{t,j}-\Delta x_{t,j}\rVert^2}{\sum_{t,j} v_{t,j}v_{t-1,j}}
-\;(+\;\lambda_b \mathcal{L}_{\text{beat}} \text{ later})
-$$
-
-- **Avoid collapse to an average pose.** Use scheduled sampling, feeding the model's own
-  predictions with a probability that ramps from 0 to about 0.5, or add Gaussian noise to the
-  previous-pose input. Also seed generation with a few real frames, or with a learned start pose
-  per category.
-- **Hardware:** it must fit in 8 GB. Write a `train.py` with a config, checkpoints to `runs/`, and
-  logging of validation loss.
-- *Check:* the model overfits one batch, and the validation loss goes down. The generated
-  sequence's mean joint speed is not ≈ 0.
+- [x] **Model:** `beat2body/model/` — diffusion transformer (EDGE-style, ~5M params: per-frame audio
+  encoder, 6 adaLN-Zero transformer blocks conditioned on diffusion step + genre, predicts the clean
+  120-frame sequence; classifier-free guidance; DDIM sampling; long pieces stitched by inpainting) and the
+  GRU baseline from `docs/pipeline_2d.md` §2. Loss: masked position + velocity.
+- [x] **Training:** `python -m beat2body train` (EMA, warmup + cosine LR, resumable checkpoints, val loss,
+  `sample_speed_ratio` = generated / real joint speed to detect collapse) and `python -m beat2body sample`.
+- [x] **Checks:** tiny local runs learn; a 32-clip overfit reproduces the clips (speed ratio 0.96), so the
+  sampler is correct; a simulated SageMaker job (staged code + data archive) produces `model.pt`.
+- [x] **AWS (us-east-1, account 670682107687):** bucket `beat2body-670682107687-us-east-1` (private, TLS only)
+  with the DWPose data at `data/dwpose/2d.tar`; role `SageMakerTraining-beat2body` (that bucket, training
+  logs/metrics, PyTorch image pull; trust limited to training jobs named `beat2body-*`); image
+  `pytorch-training:2.9.0-gpu-py312-cu130-ubuntu22.04-sagemaker` pinned by digest. Quotas: 1 x ml.g5.2xlarge
+  or ml.g6e.xlarge on demand, 1 x ml.g5.xlarge / ml.g6.xlarge spot.
+- [ ] **Launch** (not done; needs approval, billed per instance hour):
+  ```bash
+  pip install -e ".[train,aws]"
+  python -m beat2body aws submit --instance ml.g5.2xlarge --max-hours 0.5 --name smoke -- --model diffusion --tiny --steps 300
+  python -m beat2body aws submit --instance ml.g5.2xlarge --max-hours 4 --name main -- --model diffusion --steps 60000
+  python -m beat2body aws submit --instance ml.g5.xlarge --spot --max-hours 2 --name gru -- --model gru --layers 2 --steps 20000
+  python -m beat2body aws status            # progress, latest losses
+  python -m beat2body aws download <job>    # -> runs/<job>/model.pt
+  python -m beat2body sample --checkpoint runs/<job>/model.pt --video-id gLH_sFM_c01_d16_mLH4_ch05
+  ```
+- [ ] Known gap: keypoints are pelvis-centred, so whole-body travel and bounce are not modelled yet
+  (the pelvis track is stored per video; adding its velocity as 2 extra channels is the next model change).
 
 ### Task 4 — Evaluation (`beat2body/evaluate.py`, new)
 
