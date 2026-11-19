@@ -9,6 +9,15 @@ cross-attention tokens; N decoder layers (pre-norm) of rotary self-attention, cr
 Rotary embeddings are applied to the layer inputs before the attention projections, as in EDGE.
 Added: a genre embedding (with a null genre) added to the FiLM vector and appended as a
 cross-attention token.
+
+Optional (beat_attn=True): beat-relative cross-attention. Each frame's position in beats (continuous
+beat count, unwrapped from the beat-phase sin / cos that are the last two music features) gives every
+cross-attention score from motion frame i to music frame j a learned per-layer, per-head bias
+    rel[h, bin(beat_pos[j] - beat_pos[i])] + key_phase[h, bin(phase[j])]
+with bins of 1 / beat_bins of a beat (offsets clamped to +/- beat_range beats). A head can learn to look
+ahead (anticipation), behind (delay) or half a beat away (offbeat accents), and to prefer music frames on
+or off the beat. Both tables start at 0 (= the plain model). The bias is 0 where the music is dropped
+(classifier-free guidance), outside the beat grid, and for the time / genre tokens.
 """
 import math
 
@@ -83,20 +92,68 @@ class FiLMDecoderLayer(nn.Module):
         self.film1, self.film2, self.film3 = DenseFiLM(d), DenseFiLM(d), DenseFiLM(d)
         self.rotary = rotary
 
-    def forward(self, x, memory, t):
+    def forward(self, x, memory, t, cross_bias=None):
+        """cross_bias: None or (B * heads, L, S) float, added to the cross-attention scores."""
         h = self.n1(x)
         qk = self.rotary(h)
         x = x + film(self.d1(self.self_attn(qk, qk, h, need_weights=False)[0]), self.film1(t))
         h = self.n2(x)
-        x = x + film(self.d2(self.cross_attn(self.rotary(h), self.rotary(memory), memory,
+        q, k = self.rotary(h), self.rotary(memory)
+        if cross_bias is not None:
+            cross_bias = cross_bias.to(q.dtype)
+        x = x + film(self.d2(self.cross_attn(q, k, memory, attn_mask=cross_bias,
                                              need_weights=False)[0]), self.film2(t))
         return x + film(self.d3(self.ff(self.n3(x))), self.film3(t))
+
+
+def beat_position(cond, eps=0.25):
+    """Continuous beat count (B, L) and in-grid mask (B, L) from the beat-phase sin / cos in the last two
+    columns of cond. The count is the phase unwrapped over time (+1 at every wrap); beat periods are
+    many frames long, so a wrap is a drop of more than half a beat between frames."""
+    s, c = cond[..., -2].float(), cond[..., -1].float()
+    ok = s * s + c * c > eps
+    ph = torch.remainder(torch.atan2(s, c) / (2 * math.pi), 1.0)
+    d = ph[:, 1:] - ph[:, :-1]
+    wraps = (d < -0.5).float() - (d > 0.5).float()
+    pos = ph + torch.cat([torch.zeros_like(ph[:, :1]), wraps.cumsum(1)], 1)
+    return pos, ph, ok
+
+
+class BeatBias(nn.Module):
+    """Learned beat-relative cross-attention bias for every decoder layer (see the module docstring)."""
+
+    def __init__(self, layers, heads, bins=8, beat_range=2.0):
+        super().__init__()
+        self.heads, self.bins, self.R = heads, bins, int(round(beat_range * bins))
+        self.rel = nn.Parameter(torch.zeros(layers, heads, 2 * self.R + 1))
+        self.key_phase = nn.Parameter(torch.zeros(layers, heads, bins))
+
+    def forward(self, cond, keep_music, extra_tokens):
+        """-> list over layers of (B * heads, L, L + extra_tokens) biases, built once for all layers and heads."""
+        pos, ph, ok = beat_position(cond)
+        B, L = pos.shape
+        n_layers, H = self.rel.shape[:2]
+        off = pos[:, None, :] - pos[:, :, None]                                   # (B, Lq, Lk): key - query
+        rel_bin = (off * self.bins).round().clamp(-self.R, self.R).long() + self.R
+        ph_bin = (ph * self.bins).floor().long().clamp(0, self.bins - 1)          # (B, Lk)
+        # one-hot @ table: a dense matmul in both directions (an index gather's backward would accumulate
+        # millions of gradients into a few dozen bins)
+        dt = torch.get_autocast_dtype("cuda") if torch.is_autocast_enabled("cuda") else self.rel.dtype
+        rel = nn.functional.one_hot(rel_bin, 2 * self.R + 1).to(dt) @ self.rel.flatten(0, 1).T.to(dt)
+        kp = nn.functional.one_hot(ph_bin, self.bins).to(dt) @ self.key_phase.flatten(0, 1).T.to(dt)
+        bias = rel + kp[:, None]                                                  # (B, Lq, Lk, layers * H)
+        mask = ok[:, :, None] & ok[:, None, :] & keep_music[:, None, None]
+        bias = bias * mask[..., None].to(bias.dtype)
+        bias = nn.functional.pad(bias.permute(3, 0, 1, 2), (0, extra_tokens))     # (layers * H, B, Lq, S)
+        bias = bias.view(n_layers, H, B, L, L + extra_tokens).transpose(1, 2)
+        return [b.reshape(B * H, L, L + extra_tokens) for b in bias]
 
 
 class EDGEDecoder(nn.Module):
     """Predicts the clean motion x0 (B, L, nfeats) from noisy motion, music, diffusion step and genre."""
 
-    def __init__(self, nfeats, cond_dim, n_genres, seq_len=150, d=512, ff=1024, layers=8, heads=8, dropout=0.1):
+    def __init__(self, nfeats, cond_dim, n_genres, seq_len=150, d=512, ff=1024, layers=8, heads=8, dropout=0.1,
+                 beat_attn=False, beat_bins=8, beat_range=2.0):
         super().__init__()
         self.n_genres, self.seq_len, self.d = n_genres, seq_len, d
         self.rotary = Rotary(d)
@@ -113,6 +170,7 @@ class EDGEDecoder(nn.Module):
         self.genre = nn.Embedding(n_genres + 1, d)                  # index n_genres = no genre
         self.layers = nn.ModuleList([FiLMDecoderLayer(d, heads, ff, dropout, self.rotary) for _ in range(layers)])
         self.final_layer = nn.Linear(d, nfeats)
+        self.beat_bias = BeatBias(layers, heads, beat_bins, beat_range) if beat_attn else None
 
     def forward(self, x, cond, t, genre, keep_music):
         """x (B, L, nfeats), cond (B, L, cond_dim), t (B,), genre (B,) (n_genres = none), keep_music (B,) bool."""
@@ -129,6 +187,7 @@ class EDGEDecoder(nn.Module):
         t_vec = self.to_time_cond(t_hidden) + cond_hidden + g
         t_tokens = self.to_time_tokens(t_hidden).view(B, 2, self.d)
         memory = self.norm_cond(torch.cat([c, t_tokens, g[:, None]], dim=-2))
-        for layer in self.layers:
-            x = layer(x, memory, t_vec)
+        biases = self.beat_bias(cond, keep_music, 3) if self.beat_bias is not None else [None] * len(self.layers)
+        for layer, bias in zip(self.layers, biases):
+            x = layer(x, memory, t_vec, bias)
         return self.final_layer(x)

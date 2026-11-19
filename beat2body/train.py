@@ -103,6 +103,11 @@ def add_args(p):
     g.add_argument("--layers", type=int, default=8)
     g.add_argument("--heads", type=int, default=8)
     g.add_argument("--dropout", type=float, default=None, help="recipe: edge 0.1, regularized 0.2")
+    g.add_argument("--beat-attn", action="store_true",
+                   help="beat-relative cross-attention: learned per-head bias on the music frames by their offset "
+                        "from the motion frame in beats (anticipation / delay / offbeat) and by their beat phase")
+    g.add_argument("--beat-bins", type=int, default=8, help="beat-relative bias bins per beat")
+    g.add_argument("--beat-range", type=float, default=2.0, help="beat-relative offsets clamped to +/- this, beats")
     g.add_argument("--gru-hidden", type=int, default=256)
     g.add_argument("--gru-layers", type=int, default=2)
     g = p.add_argument_group("diffusion")
@@ -158,14 +163,16 @@ def add_args(p):
 
 CFG_KEYS = ("model", "tool", "feature_set", "scale_norm", "bone_weight", "min_snr", "seq_len", "d_model", "ff",
             "layers", "heads", "dropout", "gru_hidden", "gru_layers", "diffusion_steps", "music_drop", "genre_drop",
-            "guidance", "loss_weights", "normalizer", "param", "energy_weight", "energy_smooth")
+            "guidance", "loss_weights", "normalizer", "param", "energy_weight", "energy_smooth", "beat_attn",
+            "beat_bins", "beat_range")
 
 
 def build_model(cfg):
     cond_dim = audio_dim(cfg["feature_set"])
     if cfg["model"] == "diffusion":
         return EDGEDecoder(MOTION_DIM, cond_dim, cfg["n_genres"], cfg["seq_len"], cfg["d_model"], cfg["ff"],
-                           cfg["layers"], cfg["heads"], cfg["dropout"])
+                           cfg["layers"], cfg["heads"], cfg["dropout"], cfg.get("beat_attn", False),
+                           cfg.get("beat_bins", 8), cfg.get("beat_range", 2.0))
     return GRUBaseline(MOTION_DIM, cond_dim, cfg["n_genres"], cfg["gru_hidden"], cfg["gru_layers"],
                        dropout=cfg["dropout"])
 
@@ -187,11 +194,12 @@ class Generator:
 
     @torch.no_grad()
     def generate(self, cond, genre, first=None, guidance=None, steps=50, link_windows=False, generator=None,
-                 eta=1.0):
+                 eta=1.0, music_guidance=None):
+        """guidance: one weight for music + genre; with music_guidance: guidance = the genre weight."""
         cond, genre = cond.to(self.device), genre.to(self.device)
         if self.diffusion:
             x = self.diffusion.sample(cond, genre, steps=steps, eta=eta, guidance=guidance,
-                                      link_windows=link_windows, generator=generator)
+                                      link_windows=link_windows, generator=generator, music_guidance=music_guidance)
         else:
             if first is None:
                 first = self.normalizer.norm((self.normalizer.lo + self.normalizer.hi) / 2).expand(len(genre), -1)
@@ -272,8 +280,9 @@ def run(args):
         p_.requires_grad_(False)
     params = [p_ for p_ in model.parameters() if p_.requires_grad]
     # no weight decay on biases, norms, embeddings and learned null / position vectors
+    no_decay_keys = ("null_", "genre", "embed", "pos", "beat_bias")
     no_decay = [p_ for n_, p_ in model.named_parameters()
-                if p_.requires_grad and (p_.ndim < 2 or any(k in n_ for k in ("null_", "genre", "embed", "pos")))]
+                if p_.requires_grad and (p_.ndim < 2 or any(k in n_ for k in no_decay_keys))]
     ids = {id(p_) for p_ in no_decay}
     groups = [{"params": [p_ for p_ in params if id(p_) not in ids], "weight_decay": args.weight_decay},
               {"params": no_decay, "weight_decay": 0.0}]
@@ -489,6 +498,7 @@ def add_sample_args(p):
     p.add_argument("--genre", default=None, help="genre to dance (default: the video's genre)")
     p.add_argument("--seconds", type=float, default=None, help="length (default: the whole video)")
     p.add_argument("--guidance", type=float, default=None, help="guidance weight (default: the trained one)")
+    add_guidance_args(p)
     p.add_argument("--steps", type=int, default=50)
     p.add_argument("--eta", type=float, default=1.0, help="DDIM noise: 1 = EDGE (stochastic), 0 = deterministic")
     p.add_argument("--seed", type=int, default=0)
@@ -496,11 +506,32 @@ def add_sample_args(p):
     p.add_argument("-o", "--out", default=None)
 
 
-def generate_long(gen, bundle, video_id, seconds=None, genre_name=None, guidance=None, steps=50, seed=0, eta=1.0):
+def add_guidance_args(p):
+    p.add_argument("--music-guidance", type=float, default=None,
+                   help="separate guidance: weight of music given the genre; --guidance (or --genre-guidance) is then "
+                        "the genre weight. Default: one weight for both (EDGE)")
+    p.add_argument("--genre-guidance", type=float, default=None,
+                   help="separate guidance: genre weight (overrides --guidance; needs --music-guidance, else = it)")
+
+
+def guidance_weights(args, default):
+    """(guidance, music_guidance) for Generator.generate from --guidance / --genre-guidance / --music-guidance."""
+    g = args.guidance if getattr(args, "genre_guidance", None) is None else args.genre_guidance
+    m = getattr(args, "music_guidance", None)
+    if m is not None and g is None:
+        g = default
+    if m is None and getattr(args, "genre_guidance", None) is not None:
+        m = default if args.guidance is None else args.guidance
+    return g, m
+
+
+def generate_long(gen, bundle, video_id, seconds=None, genre_name=None, guidance=None, steps=50, seed=0, eta=1.0,
+                  music_guidance=None, cond=None):
     """EDGE long-form generation for a dataset video's music -> (motion (T, 38) denormalized, n windows,
     mean overlap disagreement before the cross-fade)."""
     cfg, cats = bundle["config"], bundle["categories"]
-    cond = torch.from_numpy(music_input(video_id, cfg["feature_set"], bundle["audio_stats"]))
+    if cond is None:
+        cond = torch.from_numpy(music_input(video_id, cfg["feature_set"], bundle["audio_stats"]))
     T = len(cond) if seconds is None else min(len(cond), int(seconds * 30))
     L, half = cfg["seq_len"], cfg["seq_len"] // 2
     n = max(1, int(np.ceil((T - L) / half)) + 1) if T > L else 1
@@ -509,7 +540,8 @@ def generate_long(gen, bundle, video_id, seconds=None, genre_name=None, guidance
     windows = torch.stack([cond[i * half:i * half + L] for i in range(n)])
     genre = torch.full((n,), cats[genre_name or aist.GENRES[video_id[1:3]]], dtype=torch.long)
     g = torch.Generator(device=gen.device).manual_seed(seed)
-    m = gen.generate(windows, genre, guidance=guidance, steps=steps, link_windows=n > 1, generator=g, eta=eta)
+    m = gen.generate(windows, genre, guidance=guidance, steps=steps, link_windows=n > 1, generator=g, eta=eta,
+                     music_guidance=music_guidance)
     seam = (m[1:, :half] - m[:-1, half:]).abs().mean().item() if n > 1 else 0.0
     return (EDGEDiffusion.stitch(m) if n > 1 else m[0])[:T].cpu(), n, seam
 
@@ -518,8 +550,9 @@ def run_sample(args):
     gen, bundle = load_generator(args.checkpoint, args.device)
     vid = args.video_id
     genre_name = args.genre or aist.GENRES[vid[1:3]]
-    motion, n, seam = generate_long(gen, bundle, vid, args.seconds, genre_name, args.guidance, args.steps, args.seed,
-                                    args.eta)
+    gw, mw = guidance_weights(args, bundle["config"]["guidance"])
+    motion, n, seam = generate_long(gen, bundle, vid, args.seconds, genre_name, gw, args.steps, args.seed,
+                                    args.eta, mw)
     T = len(motion)
     kp = motion[:, 4:].reshape(T, -1, 2)
     path = args.out or os.path.join(os.path.dirname(os.path.abspath(args.checkpoint)), "generated", f"{vid}.npz")

@@ -51,6 +51,8 @@ def add_args(p):
     p.add_argument("--checkpoint", required=True)
     p.add_argument("--split", default="val", choices=["val", "test"])
     p.add_argument("--guidance", type=float, default=None, help="default: the trained value")
+    from beat2body.train import add_guidance_args
+    add_guidance_args(p)
     p.add_argument("--steps", type=int, default=50, help="DDIM steps")
     p.add_argument("--eta", type=float, default=1.0, help="DDIM noise: 1 = EDGE (stochastic), 0 = deterministic")
     p.add_argument("--batch-size", type=int, default=64)
@@ -136,7 +138,7 @@ def size_variation(j):
     return {k: float(v.std() / max(v.mean(), 1e-6)) for k, v in parts}
 
 
-def long_drift(gen, bundle, split, seconds, seed):
+def long_drift(gen, bundle, split, seconds, seed, guidance=None, music_guidance=None):
     """Generated vs real whole-piece size variation, one video per genre (the first one at least `seconds` long)."""
     from beat2body.data import load_meta, video_motion
     from beat2body.train import generate_long
@@ -151,7 +153,8 @@ def long_drift(gen, bundle, split, seconds, seed):
             vids.setdefault(r["category"], r["video_id"])
     gen_v, real_v = [], []
     for cat, vid in sorted(vids.items()):
-        motion, _, _ = generate_long(gen, bundle, vid, seconds, seed=seed)
+        motion, _, _ = generate_long(gen, bundle, vid, seconds, guidance=guidance, seed=seed,
+                                     music_guidance=music_guidance)
         real, _, _ = video_motion(cfg["tool"], cat, vid, cfg.get("scale_norm", "dataset"))
         gen_v.append(size_variation(absolute_joints(motion).numpy()))
         real_v.append(size_variation(absolute_joints(torch.from_numpy(real[:len(motion)])).numpy()))
@@ -199,8 +202,10 @@ def run(args):
     from beat2body.train import load_generator
     dev = ("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu") \
         if args.device == "auto" else args.device
+    from beat2body.train import guidance_weights
     gen, bundle = load_generator(args.checkpoint, dev)
     cfg = bundle["config"]
+    gw, mw = guidance_weights(args, cfg["guidance"])
     kw = dict(seq_len=cfg["seq_len"], feature_set=cfg["feature_set"], stats=bundle["audio_stats"], augment=False,
               scale_norm=cfg.get("scale_norm", "dataset"))
     def subset(ds):
@@ -219,7 +224,7 @@ def run(args):
     for s in range(0, len(audio), args.batch_size):
         out.append(gen.generate(audio[s:s + args.batch_size], genre[s:s + args.batch_size],
                                 first=gen.normalizer.norm(real_m[s:s + args.batch_size, 0].to(dev)),
-                                guidance=args.guidance, steps=args.steps, eta=args.eta).cpu())
+                                guidance=gw, steps=args.steps, eta=args.eta, music_guidance=mw).cpu())
     gen_m = torch.cat(out)
     generated = absolute_joints(gen_m).numpy()
     static = np.repeat(real.mean((0, 1), keepdims=True), len(real), 0).repeat(real.shape[1], 1)
@@ -245,7 +250,7 @@ def run(args):
           "BeatPow: 1 = as much movement on the beat (1-4 Hz) as real; BoneCV: should match real")
     drift = None
     if args.long_seconds > 0:
-        g, r, n = long_drift(gen, bundle, args.split, args.long_seconds, args.seed)
+        g, r, n = long_drift(gen, bundle, args.split, args.long_seconds, args.seed, gw, mw)
         drift = {"generated": g, "real": r, "videos": n, "seconds": args.long_seconds}
         print(f"\nLong-dance drift ({n} videos x {args.long_seconds:.0f} s, variation std/mean over the piece):")
         print(f"{'':12s}{'torso':>9s}{'thigh':>9s}{'height':>9s}")
@@ -254,6 +259,6 @@ def run(args):
     name = f"eval_{args.split}" + (f"_{args.tag}" if args.tag else "") + ".json"
     path = os.path.join(os.path.dirname(os.path.abspath(args.checkpoint)), name)
     with open(path, "w") as f:
-        json.dump({"split": args.split, "subset": args.subset, "windows": len(real), "guidance": args.guidance,
-                   "rows": rows, "long_drift": drift}, f, indent=1)
+        json.dump({"split": args.split, "subset": args.subset, "windows": len(real), "guidance": gw,
+                   "music_guidance": mw, "rows": rows, "long_drift": drift}, f, indent=1)
     print(f"wrote {path}")

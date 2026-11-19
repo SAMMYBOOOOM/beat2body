@@ -237,7 +237,39 @@ planning if the 20-second samples still repeat short movements or lack clear tra
   and `beat-shift` (moves the beat phase + EDGE beat one-hot by 0.25 / 0.5 beat at fixed tempo, genre, seed and
   reports how far the motion accents move: follow = 1 means they follow the grid; BeatPow alongside).
 - **Runs** (7.1M, matched to 2.3 and 2.1b except `--beat-attn`; same seed):
-  3.1 `ba-pure-c4799d97` (= 2.3 + beat attention), 3.2 `ba-co-5283a42c` (= 2.1b + beat attention).
+  3.1 `ba-pure-8a92bce1` (= 2.3 + beat attention; 5 h cap, faster bias code), 3.2 `ba-co-48ba8a4d` (= 2.1b + beat attention; 5 h cap, faster bias code; the first submissions with the per-layer bias ran at ~3 steps/s vs 10.5 without and were stopped). The bias is now built once per batch for all layers as one-hot @ table
+  matmuls (the per-layer gather's backward accumulated millions of gradients into 33 bins).
+
+**Guidance sweep results** (64 advanced val windows, fixed noise; nearest-centroid genre accuracy on the real
+windows 0.53):
+
+| Model | w_genre | w_music | music_resp | genre_resp | genre_acc | FID_k | BeatPow |
+|---|---|---|---|---|---|---|---|
+| 2.3 | 2 | 2 (= current) | 0.74 | 0.82 | 0.34 | 38.2 | 0.20 |
+| 2.3 | 2 | 1 | 0.46 | 0.80 | 0.45 | 37.5 | 0.20 |
+| 2.3 | 4 | 2 | 0.67 | 1.40 | 0.48 | 71.2 | 0.35 |
+| 2.1b | 2 | 2 (= current) | 0.96 | 0.94 | 0.34 | 20.5 | 1.07 |
+| 2.1b | 2 | 1 | 0.60 | 0.94 | 0.45 | 20.5 | 1.21 |
+| 2.1b | 0 | 2 | 1.51 | 1.16 | 0.08 | 19.6 | 1.07 |
+| 2.1b | 2 | 4 | 1.53 | 1.31 | 0.22 | 50.2 | 0.88 |
+
+- Both weights work as intended: the motion follows a track change in proportion to w_music (0 = identical motion)
+  and a requested genre in proportion to w_genre. They compete: a higher music weight lowers genre accuracy.
+- **w_genre 2, w_music 1** keeps FID_k and gives genre accuracy 0.45 vs 0.34 (real 0.53) on both models; weights
+  above 3 raise FID_k sharply. Next: confirm (2, 1) with `evaluate --genre-guidance 2 --music-guidance 1` on val and
+  test before changing the default.
+- No guidance setting increases beat locking: the music weight changes *what* moves, not *when*.
+
+**Beat-shift calibration**: on 64 windows the accent detector barely separates real dances from chance (beat lock
+0.088 on their own grid vs 0.053 against random grids; jittered frozen pose 0.037), and the shift's bootstrap
+s.e. is ~0.26 beats, so a 64-window follow score is noise. Use all val windows (`--subset all --windows 1000`).
+
+**Beat-grid phase is uncertain for 7 of 60 songs** (checked 2026-11-19): tempo = published BPM for all 60, but the
+grid's phase is estimated from the audio, and for mHO2, mHO4, mKR1, mLH3, mLH4, mMH4, mWA5 the onsets are no
+stronger on the grid than half a beat away (mHO2, mLH3, mLH4, mWA5 prefer the half-beat grid). Four are test songs
+(mHO4, mLH4, mMH4, mWA5). A half-beat error flips the beat-phase input and corrupts BAS / the beat-shift probe for
+those songs. Not fixed (decided to wait for the test results); possible check: the real dancers' accent phase per
+song vs the other songs.
 
 ## 8. Operations
 
