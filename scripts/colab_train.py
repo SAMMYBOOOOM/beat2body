@@ -72,10 +72,12 @@ else:
 
 # 5. evaluate + one rendered dance
 sh([sys.executable, "-m", "beat2body", "evaluate", "--checkpoint", f"{RUN}/model.pt", "--device", "cuda"])
+# shareable videos: training progress (same clip at each check) + 20 s dances, one per genre (silent on Colab)
+sh([sys.executable, "-m", "beat2body", "report", RUN, "--device", "cuda"])
 sh([sys.executable, "-m", "beat2body", "sample", "--checkpoint", f"{RUN}/model.pt", "--video-id", DEMO_VIDEO,
     "--seconds", "20", "--device", "cuda", "-o", f"{RUN}/generated/{DEMO_VIDEO}.npz"])
 sh([sys.executable, "-m", "beat2body", "render", "--video-id", DEMO_VIDEO,
     "--keypoints", f"{RUN}/generated/{DEMO_VIDEO}.npz", "--labels", "real dancer", "generated",
     "--frames", "600", "-o", f"{RUN}/{DEMO_VIDEO}.mp4"])
 print(f"\nDone. Results in Google Drive: MyDrive/beat2body_runs/{RUN_NAME}/ "
-      f"(model.pt, model_raw.pt, metrics.jsonl, eval_val.json, {DEMO_VIDEO}.mp4)")
+      f"(model.pt, model_raw.pt, snapshots/, metrics.jsonl, eval_val.json, report/*.mp4, {DEMO_VIDEO}.mp4)")

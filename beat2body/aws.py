@@ -4,6 +4,7 @@
     python -m beat2body aws submit --instance ml.g5.2xlarge --max-hours 4 -- --model diffusion --steps 60000
     python -m beat2body aws status [JOB]          # latest beat2body job if JOB is omitted
     python -m beat2body aws download JOB          # model.pt, metrics, samples -> runs/JOB/
+    python -m beat2body aws download JOB --live   # progress of a running job (metrics, samples, snapshots)
 
 Arguments after `--` are passed to `beat2body train` inside the job. Defaults: bucket
 beat2body-<account>-<region>, role SageMakerTraining-beat2body, PyTorch 2.9 training image
@@ -51,8 +52,11 @@ def add_args(p):
     sb.add_argument("train_args", nargs=argparse.REMAINDER, help="-- then options for `beat2body train`")
     st = sub.add_parser("status", help="job status and latest training metrics")
     st.add_argument("job", nargs="?")
-    dl = sub.add_parser("download", help="download a finished job's outputs to runs/JOB/")
+    dl = sub.add_parser("download", help="download a job's outputs to runs/JOB/")
     dl.add_argument("job")
+    dl.add_argument("--live", action="store_true",
+                    help="also / only (while running) the synced checkpoint folder: metrics, samples, snapshots")
+    dl.add_argument("--no-snapshots", action="store_true", help="with --live: skip the model snapshots")
     for sp in (up, sb, st, dl):
         sp.add_argument("--bucket", default=None)
 
@@ -235,17 +239,45 @@ def status(args):
         print("  (no logs yet)")
 
 
+def download_live(session, d, out, snapshots=True):
+    """Copy the job's checkpoint folder (synced to S3 while it runs) to <out>/live/, except last.pt."""
+    ck = d.get("CheckpointConfig", {}).get("S3Uri")
+    if not ck:
+        print("[aws] this job has no checkpoint folder")
+        return
+    bucket, prefix = ck[5:].split("/", 1)
+    s3 = session.client("s3")
+    n = 0
+    for page in s3.get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix=prefix.rstrip("/") + "/"):
+        for obj in page.get("Contents", []):
+            rel = obj["Key"][len(prefix.rstrip("/")) + 1:]
+            if rel == "last.pt" or (not snapshots and rel.startswith("snapshots/")):
+                continue
+            dst = os.path.join(out, "live", rel)
+            if os.path.exists(dst) and os.path.getsize(dst) == obj["Size"]:
+                continue
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            s3.download_file(bucket, obj["Key"], dst)
+            n += 1
+    print(f"[aws] {n} new files from {ck} -> {os.path.join(out, 'live')}")
+
+
 def download(args):
     session, _ = _clients()
     sm = session.client("sagemaker")
     d = sm.describe_training_job(TrainingJobName=args.job)
+    out = os.path.join(paths.REPO_ROOT, "runs", args.job)
+    os.makedirs(out, exist_ok=True)
+    if args.live:
+        download_live(session, d, out, not args.no_snapshots)
     if d["TrainingJobStatus"] != "Completed":
-        sys.exit(f"{args.job} is {d['TrainingJobStatus']}; model artifacts exist only for completed jobs")
+        if args.live:
+            print(f"[aws] {args.job} is {d['TrainingJobStatus']}: final model not available yet")
+            return
+        sys.exit(f"{args.job} is {d['TrainingJobStatus']}; use --live for progress, the model comes when it completes")
     uri = d["ModelArtifacts"]["S3ModelArtifacts"]
     bucket, key = uri[5:].split("/", 1)
     body = session.client("s3").get_object(Bucket=bucket, Key=key)["Body"].read()
-    out = os.path.join(paths.REPO_ROOT, "runs", args.job)
-    os.makedirs(out, exist_ok=True)
     with tarfile.open(fileobj=io.BytesIO(body)) as t:
         t.extractall(out, filter="data")
     raw = os.path.join(out, "model_raw.pt")
