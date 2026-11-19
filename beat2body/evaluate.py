@@ -19,6 +19,12 @@ that window's music and genre. Metrics, adapted to 2D from AIST++ / Bailando / E
             on-screen length, averaged over bones and windows. Real dance is not 0 (foreshortening);
             generated dance should match the real value, higher = the body changes size
 
+Long-dance drift check (--long-seconds, default 20): one video per genre of the split; the model
+generates that many seconds of the video's music (EDGE long-form sampling, chained windows) and the
+variation over the whole piece (std / mean) of torso length, thigh length and body height is
+compared with the real dancer on the same music. This catches size drift that builds up across
+windows, which the per-window BoneCV cannot see.
+
 Features are standardized with the real val windows' mean / std before FID and diversity.
 Reference rows give the scale: real train windows vs real val ("Real (train)"), the real val
 windows themselves, real val dances paired with other songs (BAS only), and a frozen mean pose.
@@ -46,6 +52,7 @@ def add_args(p):
     p.add_argument("--batch-size", type=int, default=64)
     p.add_argument("--max-windows", type=int, default=None, help="evaluate on fewer windows (quick check)")
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--long-seconds", type=float, default=20.0, help="long-dance drift check length; 0 = skip")
     p.add_argument("--device", default="auto")
 
 
@@ -107,6 +114,35 @@ def pfc(j):
 def bone_cv(j):
     lengths = bone_lengths(torch.as_tensor(j)).numpy()                                # (N, L, 12)
     return float((lengths.std(1) / np.maximum(lengths.mean(1), 1e-6)).mean())
+
+
+def size_variation(j):
+    """Whole-piece variation (std / mean) of torso length, mean thigh length and body height; j (T, 17, 2)."""
+    sh, hp = j[:, [5, 6]].mean(1), j[:, [11, 12]].mean(1)
+    torso = np.linalg.norm(sh - hp, axis=-1)
+    thigh = (np.linalg.norm(j[:, 11] - j[:, 13], axis=-1) + np.linalg.norm(j[:, 12] - j[:, 14], axis=-1)) / 2
+    height = j[:, :, 1].max(1) - j[:, :, 1].min(1)
+    parts = (("torso", torso), ("thigh", thigh), ("height", height))
+    return {k: float(v.std() / max(v.mean(), 1e-6)) for k, v in parts}
+
+
+def long_drift(gen, bundle, split, seconds, seed):
+    """Generated vs real whole-piece size variation, one video per genre."""
+    from beat2body.data import load_meta, video_motion
+    from beat2body.train import generate_long
+    cfg = bundle["config"]
+    vids = {}
+    for r in load_meta(cfg["tool"], split):
+        vids.setdefault(r["category"], r["video_id"])
+    gen_v, real_v = [], []
+    for cat, vid in sorted(vids.items()):
+        motion, _, _ = generate_long(gen, bundle, vid, seconds, seed=seed)
+        real, _, _ = video_motion(cfg["tool"], cat, vid, cfg.get("scale_norm", "dataset"))
+        gen_v.append(size_variation(absolute_joints(motion).numpy()))
+        real_v.append(size_variation(absolute_joints(torch.from_numpy(real[:len(motion)])).numpy()))
+    keys = ("torso", "thigh", "height")
+    return ({k: float(np.mean([g[k] for g in gen_v])) for k in keys},
+            {k: float(np.mean([r[k] for r in real_v])) for k in keys}, len(vids))
 
 
 def mean_speed(j):
@@ -174,7 +210,16 @@ def run(args):
         print(f"{r['name']:34s}" + "".join(f"{r[c]:9.3f}" for c in cols))
     print("FID: lower = closer to real; Div: higher = more varied; BAS: higher = more on the beat;"
           " PFC: lower = less foot sliding; speed: 1 = as energetic as real; BoneCV: should match real")
+    drift = None
+    if args.long_seconds > 0:
+        g, r, n = long_drift(gen, bundle, args.split, args.long_seconds, args.seed)
+        drift = {"generated": g, "real": r, "videos": n, "seconds": args.long_seconds}
+        print(f"\nLong-dance drift ({n} videos x {args.long_seconds:.0f} s, variation std/mean over the piece):")
+        print(f"{'':12s}{'torso':>9s}{'thigh':>9s}{'height':>9s}")
+        for name, v in (("generated", g), ("real", r)):
+            print(f"{name:12s}" + "".join(f"{v[k]:9.3f}" for k in ("torso", "thigh", "height")))
     path = os.path.join(os.path.dirname(os.path.abspath(args.checkpoint)), f"eval_{args.split}.json")
     with open(path, "w") as f:
-        json.dump({"split": args.split, "windows": len(real), "guidance": args.guidance, "rows": rows}, f, indent=1)
+        json.dump({"split": args.split, "windows": len(real), "guidance": args.guidance, "rows": rows,
+                   "long_drift": drift}, f, indent=1)
     print(f"wrote {path}")

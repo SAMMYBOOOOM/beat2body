@@ -355,23 +355,30 @@ def add_sample_args(p):
     p.add_argument("-o", "--out", default=None)
 
 
-def run_sample(args):
-    gen, bundle = load_generator(args.checkpoint, args.device)
+def generate_long(gen, bundle, video_id, seconds=None, genre_name=None, guidance=None, steps=50, seed=0):
+    """EDGE long-form generation for a dataset video's music -> (motion (T, 38) denormalized, n windows,
+    mean overlap disagreement before the cross-fade)."""
     cfg, cats = bundle["config"], bundle["categories"]
-    vid = args.video_id
-    cond = torch.from_numpy(music_input(vid, cfg["feature_set"], bundle["audio_stats"]))
-    T = len(cond) if args.seconds is None else min(len(cond), int(args.seconds * 30))
+    cond = torch.from_numpy(music_input(video_id, cfg["feature_set"], bundle["audio_stats"]))
+    T = len(cond) if seconds is None else min(len(cond), int(seconds * 30))
     L, half = cfg["seq_len"], cfg["seq_len"] // 2
     n = max(1, int(np.ceil((T - L) / half)) + 1) if T > L else 1
     need = half * (n + 1) if n > 1 else L
     cond = torch.cat([cond, cond[-1:].expand(max(0, need - len(cond)), -1)])[:need]
     windows = torch.stack([cond[i * half:i * half + L] for i in range(n)])
-    genre_name = args.genre or aist.GENRES[vid[1:3]]
-    genre = torch.full((n,), cats[genre_name], dtype=torch.long)
-    g = torch.Generator(device=args.device).manual_seed(args.seed)
-    m = gen.generate(windows, genre, guidance=args.guidance, steps=args.steps, link_windows=n > 1, generator=g)
-    motion = (EDGEDiffusion.stitch(m) if n > 1 else m[0])[:T].cpu()
+    genre = torch.full((n,), cats[genre_name or aist.GENRES[video_id[1:3]]], dtype=torch.long)
+    g = torch.Generator(device=gen.device).manual_seed(seed)
+    m = gen.generate(windows, genre, guidance=guidance, steps=steps, link_windows=n > 1, generator=g)
     seam = (m[1:, :half] - m[:-1, half:]).abs().mean().item() if n > 1 else 0.0
+    return (EDGEDiffusion.stitch(m) if n > 1 else m[0])[:T].cpu(), n, seam
+
+
+def run_sample(args):
+    gen, bundle = load_generator(args.checkpoint, args.device)
+    vid = args.video_id
+    genre_name = args.genre or aist.GENRES[vid[1:3]]
+    motion, n, seam = generate_long(gen, bundle, vid, args.seconds, genre_name, args.guidance, args.steps, args.seed)
+    T = len(motion)
     kp = motion[:, 4:].reshape(T, -1, 2)
     path = args.out or os.path.join(os.path.dirname(os.path.abspath(args.checkpoint)), "generated", f"{vid}.npz")
     os.makedirs(os.path.dirname(path), exist_ok=True)
