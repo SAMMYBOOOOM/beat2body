@@ -119,6 +119,59 @@ def run(args):
         print(f"{cat}/{vid}: {len(log_mel)} frames, {len(beats)} beats ({bpm:.0f} BPM, {how})")
 
 
+EDGE_DOC = """EDGE's "baseline" music features (35 per frame), from the raw videos.
+
+Same as EDGE (data/audio_extraction/baseline_features.py): audio at 15360 Hz, hop 512 = 30 fps;
+    onset envelope (1), MFCC (20), chroma CENS (12), onset peaks one-hot (1), beats one-hot (1).
+Difference: the beat one-hot comes from our beat grid (published AIST tempo; `beats`), where EDGE
+runs librosa's tracker with the published tempo as start_bpm. Output (T, 35) float32:
+    <data>/features/audio_edge/<video_id>.npy
+
+    python -m beat2body edge-features            # needs the raw videos, ffmpeg and librosa
+"""
+EDGE_SR, EDGE_HOP = 15360, 512
+
+
+def edge_features(audio_file, beats):
+    """(T, 35) EDGE baseline features; beats = beat times in frames (float)."""
+    import librosa
+    y, sr = librosa.load(audio_file, sr=EDGE_SR, mono=True)
+    env = librosa.onset.onset_strength(y=y, sr=sr, hop_length=EDGE_HOP)
+    mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=20, hop_length=EDGE_HOP).T
+    chroma = librosa.feature.chroma_cens(y=y, sr=sr, hop_length=EDGE_HOP, n_chroma=12).T
+    T = min(len(env), len(mfcc), len(chroma))
+    peaks = np.zeros(T, np.float32)
+    idx = librosa.onset.onset_detect(onset_envelope=env, sr=sr, hop_length=EDGE_HOP)
+    peaks[idx[idx < T]] = 1
+    beat = np.zeros(T, np.float32)
+    b = np.round(beats).astype(int)
+    beat[b[(b >= 0) & (b < T)]] = 1
+    return np.concatenate([env[:T, None], mfcc[:T], chroma[:T], peaks[:, None], beat[:, None]], 1).astype(np.float32)
+
+
+def add_edge_args(p):
+    p.add_argument("--categories", nargs="*", default=None)
+    p.add_argument("--overwrite", action="store_true")
+
+
+def run_edge(args):
+    import tempfile
+    n = 0
+    for cat, vid, path in aist.list_videos(args.categories):
+        out = paths.feature_path("audio_edge", vid)
+        if os.path.exists(out) and not args.overwrite:
+            continue
+        with tempfile.TemporaryDirectory() as tmp:
+            wav = os.path.join(tmp, "a.wav")
+            extract_wav(path, wav, EDGE_SR)
+            feats = edge_features(wav, np.load(paths.feature_path("beats", vid)))
+        _save("audio_edge", vid, feats)
+        n += 1
+        if n % 20 == 0:
+            print(f"  {n} videos ({cat}/{vid}: {feats.shape})")
+    print(f"wrote EDGE features for {n} videos")
+
+
 BEATS_DOC = """Recompute the beats (features/beats/) from the existing onset features (no audio needed).
 
     python -m beat2body beats            # all videos with onset features

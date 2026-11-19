@@ -5,6 +5,7 @@ Data preparation (README 4.2-4.7), in order:
     clean         4.4 keypoint cleaning + normalization (one tool)
     audio         4.5 audio features (shared by all tools)
     beats         recompute beats from onset features (published AIST tempo)
+    edge-features EDGE's 35 baseline music features (needs the raw videos)
     clips         4.6 + 4.7 windows and train / val / test split (one tool)
     all           audio + clean + clips for several tools
     frames        4.2 optional JPEG dump
@@ -37,8 +38,9 @@ def _commands():
     from beat2body import render
     from beat2body.prep import audio, audit, clean, clips, frames, hf, run_all
     beats = SimpleNamespace(DOC=audio.BEATS_DOC, add_args=audio.add_beats_args, run=audio.run_beats)
-    commands = {"clean": clean, "audio": audio, "beats": beats, "clips": clips, "all": run_all,
-                "frames": frames, "audit": audit, "hf": hf, "render": render}
+    edge_feats = SimpleNamespace(DOC=audio.EDGE_DOC, add_args=audio.add_edge_args, run=audio.run_edge)
+    commands = {"clean": clean, "audio": audio, "beats": beats, "edge-features": edge_feats, "clips": clips,
+                "all": run_all, "frames": frames, "audit": audit, "hf": hf, "render": render}
     try:  # training commands need torch (pip install -e ".[train]")
         from beat2body import data, train
         commands["data"] = data

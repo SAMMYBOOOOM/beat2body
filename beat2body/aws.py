@@ -81,7 +81,8 @@ def upload_data(args):
     session, account = _clients()
     bucket = _bucket(args, account)
     root = paths.data_root()
-    members = ["categories.json", "features", os.path.join("clips", args.tool)]
+    members = ["categories.json", "features", os.path.join("keypoints", args.tool),
+               os.path.join("clips", args.tool, "meta.csv"), os.path.join("clips", args.tool, "split.json")]
     for m in members:
         if not os.path.exists(os.path.join(root, m)):
             sys.exit(f"{m} missing under {root}; run `python -m beat2body hf download --tool {args.tool}`")

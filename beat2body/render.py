@@ -4,7 +4,8 @@ Each panel shows one normalized (T, 17, 2) sequence on a blank canvas; the panel
 flashes on detected music beats. Sources:
 
     --video-id ID        the cleaned keypoints of a dataset video (+ its beats and audio)
-    --keypoints FILE     a .npy (T, 17, 2) or .npz with `keypoints`, e.g. a generated sequence
+    --keypoints FILE     a generated .npz (from `sample`: uses `absolute`, i.e. with root motion),
+                         or a .npy / .npz with pelvis-centred `keypoints` (T, 17, 2)
     --overlay            add the original video with the skeleton drawn on it (needs raw_video/)
 
     python -m beat2body render --video-id gLH_sFM_c01_d16_mLH0_ch01 --overlay
@@ -47,9 +48,15 @@ def find_clean(tool, video_id):
 
 
 def load_sequence(path):
+    """(T, 17, 2) joints to draw: with root motion when the file has it."""
     if path.endswith(".npy"):
         return np.load(path).astype(np.float32)
     with np.load(path) as d:
+        if "absolute" in d.files:
+            return d["absolute"].astype(np.float32)
+        if "motion" in d.files:
+            m = d["motion"].astype(np.float32)
+            return m[:, 4:].reshape(len(m), -1, 2) + m[:, None, 2:4]
         return d["keypoints"].astype(np.float32)
 
 
@@ -84,7 +91,9 @@ def run(args):
         f = find_clean(args.tool, args.video_id)
         gt = np.load(f)
         cat = os.path.basename(os.path.dirname(f))
-        seqs.append(gt["keypoints"])
+        centre = np.array([float(gt["width"]) / 2, float(gt["height"]) / 2], np.float32)
+        root = (gt["pelvis"] - centre) / float(gt["scale"])
+        seqs.append(gt["keypoints"] + root[:, None])            # with root motion, as the model sees it
         titles.append(f"{cat} ({args.tool})")
         if os.path.exists(paths.feature_path("beats", args.video_id)):
             beats = np.load(paths.feature_path("beats", args.video_id))

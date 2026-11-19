@@ -124,33 +124,43 @@ run `ruff check beat2body` and `pytest`.
 - [x] Check: `python -m beat2body data --tool dwpose` → all splits load, no NaNs, 10 genres, train audio
   mean 0 / std 1; 2155 train clips in memory, 0.15 s per epoch with `num_workers=0`. Tests in `tests/test_data.py`.
 
-### Task 3 — Model and training on AWS (code ready, not launched)
+### Task 3 — Model and training on AWS (EDGE replica; code ready, not launched)
 
-- [x] **Model:** `beat2body/model/` — diffusion transformer (EDGE-style, ~5M params: per-frame audio
-  encoder, 6 adaLN-Zero transformer blocks conditioned on diffusion step + genre, predicts the clean
-  120-frame sequence; classifier-free guidance; DDIM sampling; long pieces stitched by inpainting) and the
-  GRU baseline from `docs/pipeline_2d.md` §2. Loss: masked position + velocity.
-- [x] **Training:** `python -m beat2body train` (EMA, warmup + cosine LR, resumable checkpoints, val loss,
-  `sample_speed_ratio` = generated / real joint speed to detect collapse) and `python -m beat2body sample`.
-- [x] **Checks:** tiny local runs learn; a 32-clip overfit reproduces the clips (speed ratio 0.96), so the
-  sampler is correct; a simulated SageMaker job (staged code + data archive) produces `model.pt`.
-- [x] **AWS (us-east-1, account 670682107687):** bucket `beat2body-670682107687-us-east-1` (private, TLS only)
-  with the DWPose data at `data/dwpose/2d.tar`; role `SageMakerTraining-beat2body` (that bucket, training
-  logs/metrics, PyTorch image pull; trust limited to training jobs named `beat2body-*`); image
-  `pytorch-training:2.9.0-gpu-py312-cu130-ubuntu22.04-sagemaker` pinned by digest. Quotas: 1 x ml.g5.2xlarge
-  or ml.g6e.xlarge on demand, 1 x ml.g5.xlarge / ml.g6.xlarge spot.
-- [ ] **Launch** (not done; needs approval, billed per instance hour):
+The model replicates EDGE (Tseng et al., CVPR 2023) as closely as 2D allows; values below were read
+from EDGE's code (github.com/Stanford-TML/EDGE). `python -m beat2body train` uses them by default.
+
+| | EDGE | ours |
+| --- | --- | --- |
+| Motion per frame | 4 foot contacts + 3 root + 24 x 6D rotations = 151 | 2 ankle contacts + 2 root (pelvis in image) + 17 x 2D joints = 38 |
+| Window | 150 frames (5 s, 30 fps) | same |
+| Music input | Jukebox (4800) or "baseline" (35: envelope, 20 MFCC, 12 chroma, onset, beat) | baseline 35 (beat one-hot from the published-tempo grid) + 2 beat-phase (sin, cos) |
+| Network | DanceDecoder: d 512, ff 1024, 8 layers, 8 heads, dropout 0.1, rotary, 2-layer music encoder, cross-attention, FiLM (step + pooled music) | same (46.9M params) + genre embedding (FiLM + cross-attn token) |
+| Diffusion | 1000 steps, cosine, predicts x0, L2 | same |
+| Losses | 0.636 recon + 2.964 velocity + 0.646 FK + 10.942 foot skating (contact > 0.95) | same; FK = absolute 2D joints; masks for unobserved joints |
+| Guidance | music dropped 25%, weight 2 | same + genre dropped 25% |
+| Optimizer | Adan lr 4e-4 wd 0.02, constant LR, no clipping, EMA 0.9999, batch 64, 2000 epochs | same (66k steps) |
+| Sampling | DDIM 50 steps eta 1; long form: half-overlapping windows + guidance ramp + cross-fade | same |
+
+- [x] Implemented (`beat2body/model/edge.py`, `diffusion.py`, `adan.py`, `data.py`, `train.py`); 22 tests.
+- [x] Checks: a tiny model memorizing 32 clips reproduces their motion (speed ratio 1.07, root travel
+  0.62 vs 0.55, contact 25% vs 28%); a simulated SageMaker job produces `model.pt`.
+- [x] EDGE features computed for all 210 videos (`python -m beat2body edge-features`); S3 archive
+  `data/dwpose/2d.tar` (125 MB) holds keypoints, features, meta.csv.
+- [ ] Watch in the first real run: windows of long pieces disagree on their overlaps before the
+  cross-fade (the tiny memorizing model: up to 3.9 torso lengths); `sample` prints this.
+- [ ] Launch (billed per instance hour; see AWS section below for setup):
   ```bash
   pip install -e ".[train,aws]"
-  python -m beat2body aws submit --instance ml.g5.2xlarge --max-hours 0.5 --name smoke -- --model diffusion --tiny --steps 300
-  python -m beat2body aws submit --instance ml.g5.2xlarge --max-hours 4 --name main -- --model diffusion --steps 60000
-  python -m beat2body aws submit --instance ml.g5.xlarge --spot --max-hours 2 --name gru -- --model gru --layers 2 --steps 20000
-  python -m beat2body aws status            # progress, latest losses
-  python -m beat2body aws download <job>    # -> runs/<job>/model.pt
+  python -m beat2body aws submit --instance ml.g5.2xlarge --max-hours 0.5 --name smoke -- --tiny --steps 300
+  python -m beat2body aws submit --instance ml.g5.2xlarge --max-hours 8 --name edge
+  python -m beat2body aws submit --instance ml.g5.xlarge --spot --max-hours 2 --name gru -- --model gru --steps 20000
+  python -m beat2body aws status ; python -m beat2body aws download <job>
   python -m beat2body sample --checkpoint runs/<job>/model.pt --video-id gLH_sFM_c01_d16_mLH4_ch05
+  python -m beat2body render --video-id gLH_sFM_c01_d16_mLH4_ch05 --keypoints runs/<job>/generated/gLH_sFM_c01_d16_mLH4_ch05.npz
   ```
-- [ ] Known gap: keypoints are pelvis-centred, so whole-body travel and bounce are not modelled yet
-  (the pelvis track is stored per video; adding its velocity as 2 extra channels is the next model change).
+- AWS (us-east-1, account 670682107687): bucket `beat2body-670682107687-us-east-1`; role
+  `SageMakerTraining-beat2body`; image `pytorch-training:2.9.0-gpu-py312-cu130-ubuntu22.04-sagemaker` (digest-pinned);
+  quotas 1 x ml.g5.2xlarge / ml.g6e.xlarge on demand, 1 x ml.g5.xlarge / ml.g6.xlarge spot.
 
 ### Task 4 — Evaluation (`beat2body/evaluate.py`, new)
 

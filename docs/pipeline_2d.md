@@ -218,11 +218,15 @@ original public copies with the old per-video split.
 
 `hf download` puts a dataset in place (`data --download` does the same when `meta.csv` is missing); `hf card` writes the dataset card to `2d/hf_cards/` for review; `hf upload --prune` publishes local results with the card (source, AIST terms and citation, file format, split).
 
-**Training data loader.** `beat2body.data.DanceClips` / `make_loader(tool, split, batch_size, seq_len)`
-give dicts of `keypoints (L,17,2)`, `valid (L,17)`, `audio (L,65)` (mel + onset, normalized with
-train-split statistics cached in `clips/<tool>/audio_stats.json`), `beats (L,)` 0/1 mask and `category`.
-Train items get a random crop and a left/right flip. Everything is in memory: use `num_workers=0`.
-`python -m beat2body data --tool dwpose` checks shapes, NaNs, statistics and speed.
+**Training data loader.** `beat2body.data.DanceClips` / `make_loader(tool, split, batch_size, seq_len=150)`
+give EDGE-style windows: `motion (L,38)` = [2 ankle contacts | 2 root (pelvis in the image) | 17 x 2
+pelvis-centred joints], `valid`, `root_valid`, `audio (L,37)` = EDGE's 35 baseline music features
+(`python -m beat2body edge-features`, normalized with train-split statistics) + beat phase (sin, cos),
+`beats` and `category`. Windows come from `meta.csv`; data is read from the per-video files. Train items
+get a random crop and a left/right flip. `python -m beat2body data` checks shapes, NaNs and statistics.
+
+**Model.** An EDGE replica (Tseng et al., CVPR 2023) adapted to 2D with a genre condition; see
+`NEXT_STEPS.md` (Task 3) for the side-by-side comparison and `python -m beat2body train --help`.
 
 **Rendering.** `python -m beat2body render --video-id <id> --overlay` writes a stick-figure video (beats flash the panel border, audio included); `--keypoints file.npy` adds a panel for a generated `(T, 17, 2)` sequence.
 
