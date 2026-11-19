@@ -39,7 +39,7 @@ def test_edge_loss_backward_and_sampling():
     x0, cond, genre, valid, rv = batch()
     loss, parts = diff.loss(x0, cond, genre, valid, rv)
     loss.backward()
-    assert loss.item() > 0 and set(parts) == {"recon", "vel", "fk", "foot"}
+    assert loss.item() > 0 and set(parts) == {"recon", "vel", "fk", "foot", "bone"}
     out = diff.sample(cond, genre, steps=4)
     assert out.shape == (B, L, MOTION_DIM) and torch.isfinite(out).all()
 

@@ -24,6 +24,11 @@ features/), so changing the representation needs no rebuild. Train items take a 
 seq_len crop of a clip and a random left/right flip; val / test items are deterministic.
 Everything is held in memory; keep num_workers=0.
 
+Body size (scale_norm): "video" (default) divides each video's root and joints by that video's
+median torso length, so every dancer has the same body size (taller dancers and dancers closer to
+the camera no longer look bigger); within a video, real foreshortening is kept. "dataset" keeps
+the single dataset-wide scale of the cleaned keypoints.
+
 Foot contact: an ankle is "in contact" when its image speed (with root motion) is below
 CONTACT_THRESHOLD torso lengths per frame (~1.5 px at 1080p, ~40% of frames).
 
@@ -42,7 +47,7 @@ from torch.utils.data import DataLoader, Dataset
 
 from beat2body import aist, paths
 from beat2body.paths import SPLITS, TOOLS
-from beat2body.skeleton import FLIP_PERM, L_HIP, R_HIP
+from beat2body.skeleton import FLIP_PERM, L_HIP, L_SHOULDER, R_HIP, R_SHOULDER
 
 DOC = __doc__
 N_JOINTS = 17
@@ -52,6 +57,7 @@ MOTION_DIM = 2 + 2 + 2 * N_JOINTS              # 38
 CONTACT, ROOT, JOINTS = slice(0, 2), slice(2, 4), slice(4, MOTION_DIM)
 FEATURE_SETS = {"edge": (["audio_edge"], 35), "mel": (["audio_mel", "audio_onset"], 65)}
 PHASE_DIM = 2
+SCALE_NORMS = ("video", "dataset")
 
 
 def audio_dim(feature_set):
@@ -86,12 +92,22 @@ def ensure_data(tool, org=None):
 # ---------------------------------------------------------------------------
 # per-video arrays
 # ---------------------------------------------------------------------------
-def video_motion(tool, category, video_id):
+def torso_length(kp, valid):
+    """Median mid-shoulder to mid-hip distance over frames where all four joints were observed."""
+    ok = valid[:, [L_SHOULDER, R_SHOULDER, L_HIP, R_HIP]].all(1)
+    t = np.linalg.norm((kp[:, L_SHOULDER] + kp[:, R_SHOULDER]) / 2 - (kp[:, L_HIP] + kp[:, R_HIP]) / 2, axis=-1)
+    return float(np.median(t[ok])) if ok.any() else 1.0
+
+
+def video_motion(tool, category, video_id, scale_norm="video"):
     """(T, 38) motion, (T, 17) valid, (T,) root_valid for one video."""
     d = np.load(paths.clean_keypoint_path(tool, category, video_id))
     kp, valid, scale = d["keypoints"].astype(np.float32), d["valid"], float(d["scale"])
     centre = np.array([float(d["width"]) / 2, float(d["height"]) / 2], np.float32)
     root = (d["pelvis"].astype(np.float32) - centre) / scale
+    if scale_norm == "video":                    # this dancer's torso = 1
+        t = torso_length(kp, valid)
+        kp, root = kp / t, root / t
     ankles = kp[:, ANKLES] + root[:, None]
     speed = np.linalg.norm(np.diff(ankles, axis=0), axis=-1)
     speed = np.concatenate([speed[:1], speed])                   # (T, 2)
@@ -178,7 +194,7 @@ class DanceClips(Dataset):
     """Windows of one split of one pose tool (see the module docstring for the item format)."""
 
     def __init__(self, tool="dwpose", split="train", seq_len=150, feature_set="edge", augment=None,
-                 flip_prob=0.5, stats=None):
+                 flip_prob=0.5, stats=None, scale_norm="video"):
         if tool not in TOOLS or split not in SPLITS or feature_set not in FEATURE_SETS:
             raise ValueError(f"tool in {TOOLS}, split in {SPLITS}, feature_set in {list(FEATURE_SETS)}")
         self.tool, self.split, self.feature_set = tool, split, feature_set
@@ -198,7 +214,7 @@ class DanceClips(Dataset):
             v = r["video_id"]
             if v in self.videos:
                 continue
-            motion, valid, root_valid = video_motion(tool, r["category"], v)
+            motion, valid, root_valid = video_motion(tool, r["category"], v, scale_norm)
             beats = np.load(paths.feature_path("beats", v))
             audio = music_input(v, feature_set, self.stats, beats)
             T = min(len(motion), len(audio))

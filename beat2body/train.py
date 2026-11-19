@@ -18,7 +18,8 @@ Outputs in --out (on SageMaker: $SM_MODEL_DIR, uploaded to S3 at the end):
 Resumable checkpoints go to --checkpoint-dir (SageMaker: /opt/ml/checkpoints, kept across spot restarts).
 
 Validation: loss on val windows, and for generated val windows the joint speed relative to real
-motion (`speed_ratio`, near 0 = frozen) and the share of frames with predicted foot contact.
+motion (`speed_ratio`, near 0 = frozen), the share of frames with predicted foot contact, and the
+drift detector `bone_cv` (bone-length variation; compare with `bone_cv_real`).
 """
 import contextlib
 import copy
@@ -34,6 +35,7 @@ from beat2body.data import (
     CONTACT,
     FEATURE_SETS,
     MOTION_DIM,
+    SCALE_NORMS,
     DanceClips,
     audio_dim,
     audio_stats,
@@ -41,7 +43,15 @@ from beat2body.data import (
     music_input,
 )
 from beat2body.model.adan import Adan
-from beat2body.model.diffusion import EDGE_WEIGHTS, EDGEDiffusion, Normalizer, absolute_joints, gru_generate, gru_loss
+from beat2body.model.diffusion import (
+    EDGE_WEIGHTS,
+    EDGEDiffusion,
+    Normalizer,
+    absolute_joints,
+    bone_lengths,
+    gru_generate,
+    gru_loss,
+)
 from beat2body.model.edge import EDGEDecoder
 from beat2body.model.nets import GRUBaseline
 from beat2body.paths import TOOLS
@@ -53,6 +63,8 @@ def add_args(p):
     p.add_argument("--model", choices=["diffusion", "gru"], default="diffusion")
     p.add_argument("--tool", default="dwpose", choices=TOOLS)
     p.add_argument("--feature-set", default="edge", choices=list(FEATURE_SETS))
+    p.add_argument("--scale-norm", default="video", choices=list(SCALE_NORMS),
+                   help="video: every dancer the same body size (default); dataset: one scale for all videos")
     p.add_argument("--seq-len", type=int, default=150, help="frames per window (EDGE: 5 s at 30 fps)")
     p.add_argument("--batch-size", type=int, default=64)
     p.add_argument("--steps", type=int, default=66000, help="EDGE: 2000 epochs = ~66k steps here")
@@ -80,6 +92,8 @@ def add_args(p):
     g.add_argument("--guidance", type=float, default=2.0)
     g.add_argument("--loss-weights", type=float, nargs=4, default=list(EDGE_WEIGHTS),
                    metavar=("RECON", "VEL", "FK", "FOOT"))
+    g.add_argument("--bone-weight", type=float, default=1.0,
+                   help="projected bone-length loss (on-screen bone lengths vs the real frame); 0 = off (EDGE)")
     g.add_argument("--sample-steps", type=int, default=50)
     g = p.add_argument_group("run")
     g.add_argument("--log-every", type=int, default=100)
@@ -97,8 +111,9 @@ def add_args(p):
                    help="train on the first N clips only (overfitting checks); validation uses them too")
 
 
-CFG_KEYS = ("model", "tool", "feature_set", "seq_len", "d_model", "ff", "layers", "heads", "dropout",
-            "gru_hidden", "gru_layers", "diffusion_steps", "music_drop", "genre_drop", "guidance", "loss_weights")
+CFG_KEYS = ("model", "tool", "feature_set", "scale_norm", "bone_weight", "seq_len", "d_model", "ff", "layers",
+            "heads", "dropout", "gru_hidden", "gru_layers", "diffusion_steps", "music_drop", "genre_drop",
+            "guidance", "loss_weights")
 
 
 def build_model(cfg):
@@ -117,7 +132,8 @@ class Generator:
         self.model, self.cfg, self.device = model.to(device).eval(), cfg, device
         self.normalizer = Normalizer(lo, hi, device)
         self.diffusion = EDGEDiffusion(self.model, self.normalizer, cfg["diffusion_steps"], cfg["music_drop"],
-                                       cfg["genre_drop"], cfg["guidance"], tuple(cfg["loss_weights"])) \
+                                       cfg["genre_drop"], cfg["guidance"], tuple(cfg["loss_weights"]),
+                                       cfg.get("bone_weight", 0.0)) \
             if cfg["model"] == "diffusion" else None
 
     @torch.no_grad()
@@ -145,6 +161,13 @@ def load_generator(path, device="cpu"):
     return Generator(model, b["config"], b["motion_lo"], b["motion_hi"], device), b
 
 
+def bone_cv(motion):
+    """Drift detector: variation over time (std / mean) of each body bone's on-screen length,
+    averaged over bones and windows. Real dance is not 0 (foreshortening); match the real value."""
+    lengths = bone_lengths(absolute_joints(motion))                                    # (B, L, 12)
+    return (lengths.std(1) / lengths.mean(1).clamp(min=1e-6)).mean().item()
+
+
 def joint_speed(motion):
     """Mean absolute-joint speed (torso lengths / frame) of denormalized motion (B, L, 38)."""
     j = absolute_joints(motion)
@@ -166,8 +189,8 @@ def run(args):
 
     stats = audio_stats(args.tool, args.feature_set)
     categories = aist.load_categories()
-    train = DanceClips(args.tool, "train", args.seq_len, args.feature_set, stats=stats)
-    val = DanceClips(args.tool, "val", args.seq_len, args.feature_set, stats=stats)
+    train = DanceClips(args.tool, "train", args.seq_len, args.feature_set, stats=stats, scale_norm=args.scale_norm)
+    val = DanceClips(args.tool, "val", args.seq_len, args.feature_set, stats=stats, scale_norm=args.scale_norm)
     if args.max_train_clips:
         train.rows = train.rows[:args.max_train_clips]
         train.augment = False
@@ -229,9 +252,9 @@ def run(args):
         if args.model == "diffusion":
             d = gen.diffusion if net is model else EDGEDiffusion(net, norm, args.diffusion_steps, args.music_drop,
                                                                args.genre_drop, args.guidance,
-                                                               tuple(args.loss_weights))
+                                                               tuple(args.loss_weights), args.bone_weight)
             return d.loss(x0, cond, genre, valid, root_valid)
-        return gru_loss(net, x0, cond, genre, valid, root_valid, norm)
+        return gru_loss(net, x0, cond, genre, valid, root_valid, norm, bone_weight=args.bone_weight)
 
     def validate():
         net = ema if ema is not None else model
@@ -259,7 +282,8 @@ def run(args):
             np.savez(os.path.join(args.out, "samples", name), motion=m[i].cpu().numpy())
         model.train()
         return {"speed_ratio": joint_speed(m) / max(joint_speed(real), 1e-8),
-                "contact_rate": (m[..., CONTACT] > 0.5).float().mean().item()}
+                "contact_rate": (m[..., CONTACT] > 0.5).float().mean().item(),
+                "bone_cv": bone_cv(m), "bone_cv_real": bone_cv(real)}
 
     t0, it = time.time(), iter(loader)
     while step < args.steps:

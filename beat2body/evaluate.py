@@ -15,6 +15,9 @@ that window's music and genre. Metrics, adapted to 2D from AIST++ / Bailando / E
     PFC     EDGE's physical foot contact score: mean over frames of root acceleration x the slower
             ankle's speed (each normalized by its max); lower = fewer sliding / floating feet
     speed   mean joint speed relative to the real val windows (1 = same energy, ~0 = frozen)
+    BoneCV  drift detector: for each window, the variation (std / mean over time) of each body bone's
+            on-screen length, averaged over bones and windows. Real dance is not 0 (foreshortening);
+            generated dance should match the real value, higher = the body changes size
 
 Features are standardized with the real val windows' mean / std before FID and diversity.
 Reference rows give the scale: real train windows vs real val ("Real (train)"), the real val
@@ -30,7 +33,7 @@ from scipy.ndimage import gaussian_filter1d
 from scipy.signal import argrelextrema
 
 from beat2body.data import ANKLES, CONTACT, DanceClips
-from beat2body.model.diffusion import absolute_joints
+from beat2body.model.diffusion import absolute_joints, bone_lengths
 
 DOC = __doc__
 
@@ -101,6 +104,11 @@ def pfc(j):
     return float((acc * foot_v.min(1)).mean())
 
 
+def bone_cv(j):
+    lengths = bone_lengths(torch.as_tensor(j)).numpy()                                # (N, L, 12)
+    return float((lengths.std(1) / np.maximum(lengths.mean(1), 1e-6)).mean())
+
+
 def mean_speed(j):
     return float(np.linalg.norm(np.diff(j, axis=1), axis=-1).mean())
 
@@ -110,7 +118,8 @@ def score(name, j, real_j, beats, z_k, z_p, contact=None):
     rk, rp = (kinetic_features(real_j) - z_k[0]) / z_k[1], (pose_features(real_j) - z_p[0]) / z_p[1]
     row = {"name": name, "FID_k": frechet(fk, rk), "FID_p": frechet(fp, rp), "Div_k": diversity(fk),
            "Div_p": diversity(fp), "BAS": float(np.mean([bas(x, b) for x, b in zip(j, beats)])),
-           "PFC": float(np.mean([pfc(x) for x in j])), "speed": mean_speed(j) / mean_speed(real_j)}
+           "PFC": float(np.mean([pfc(x) for x in j])), "speed": mean_speed(j) / mean_speed(real_j),
+           "BoneCV": bone_cv(j)}
     if contact is not None:
         row["contact"] = float(contact)
     return row
@@ -130,7 +139,8 @@ def run(args):
         if args.device == "auto" else args.device
     gen, bundle = load_generator(args.checkpoint, dev)
     cfg = bundle["config"]
-    kw = dict(seq_len=cfg["seq_len"], feature_set=cfg["feature_set"], stats=bundle["audio_stats"], augment=False)
+    kw = dict(seq_len=cfg["seq_len"], feature_set=cfg["feature_set"], stats=bundle["audio_stats"], augment=False,
+              scale_norm=cfg.get("scale_norm", "dataset"))
     real_m, audio, genre, beats = windows(DanceClips(cfg["tool"], args.split, **kw), args.max_windows)
     train_m, _, _, train_beats = windows(DanceClips(cfg["tool"], "train", **kw), len(real_m))
     real = absolute_joints(real_m).numpy()
@@ -158,12 +168,12 @@ def run(args):
         score("Frozen mean pose", static, real, beats, z_k, z_p),
     ]
     print(f"\n{args.split}: {len(real)} windows of {cfg['seq_len']} frames; checkpoint {args.checkpoint}")
-    cols = ["FID_k", "FID_p", "Div_k", "Div_p", "BAS", "PFC", "speed"]
+    cols = ["FID_k", "FID_p", "Div_k", "Div_p", "BAS", "PFC", "speed", "BoneCV"]
     print(f"{'':34s}" + "".join(f"{c:>9s}" for c in cols))
     for r in rows:
         print(f"{r['name']:34s}" + "".join(f"{r[c]:9.3f}" for c in cols))
     print("FID: lower = closer to real; Div: higher = more varied; BAS: higher = more on the beat;"
-          " PFC: lower = less foot sliding; speed: 1 = as energetic as real")
+          " PFC: lower = less foot sliding; speed: 1 = as energetic as real; BoneCV: should match real")
     path = os.path.join(os.path.dirname(os.path.abspath(args.checkpoint)), f"eval_{args.split}.json")
     with open(path, "w") as f:
         json.dump({"split": args.split, "windows": len(real), "guidance": args.guidance, "rows": rows}, f, indent=1)

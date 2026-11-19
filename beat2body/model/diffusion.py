@@ -21,6 +21,14 @@ from beat2body.data import CONTACT, JOINTS, MOTION_DIM, N_JOINTS, ROOT
 
 ANKLE_IDX = (15, 16)
 EDGE_WEIGHTS = (0.636, 2.964, 0.646, 10.942)
+# body bones of the 2D skeleton (COCO-17 edges without the face)
+BODY_BONES = torch.tensor([(5, 7), (7, 9), (6, 8), (8, 10), (5, 6), (5, 11), (6, 12), (11, 12),
+                           (11, 13), (13, 15), (12, 14), (14, 16)])
+
+
+def bone_lengths(j):
+    """(..., 17, 2) joints -> (..., 12) on-screen lengths of the body bones."""
+    return (j[..., BODY_BONES[:, 0], :] - j[..., BODY_BONES[:, 1], :]).norm(dim=-1)
 
 
 def cosine_alphas_cumprod(T, s=0.008):
@@ -64,8 +72,10 @@ def masked_mse(a, b, mask):
     return ((a - b) ** 2 * mask).sum() / mask.sum().clamp(min=1)
 
 
-def motion_losses(pred_n, target_n, valid, root_valid, normalizer, weights=EDGE_WEIGHTS):
-    """EDGE's four losses on normalized predictions / targets (B, L, 38)."""
+def motion_losses(pred_n, target_n, valid, root_valid, normalizer, weights=EDGE_WEIGHTS, bone_weight=0.0):
+    """EDGE's four losses on normalized predictions / targets (B, L, 38), plus the projected bone-length
+    loss: each body bone's on-screen length vs the same bone in the real frame (relative error), so
+    foreshortening in the real data is kept and no constant length is assumed."""
     m = feature_mask(valid, root_valid)
     recon = masked_mse(pred_n, target_n, m)
     nc = slice(CONTACT.stop, MOTION_DIM)
@@ -80,17 +90,21 @@ def motion_losses(pred_n, target_n, valid, root_valid, normalizer, weights=EDGE_
     foot_v[:, :-1] = feet[:, 1:] - feet[:, :-1]
     foot_v = foot_v * static[..., None]
     foot = (foot_v ** 2).mean()
-    parts = {"recon": recon.item(), "vel": vel.item(), "fk": fk.item(), "foot": foot.item()}
-    total = weights[0] * recon + weights[1] * vel + weights[2] * fk + weights[3] * foot
+    lp, lt = bone_lengths(pa), bone_lengths(ta)
+    mb = (valid[..., BODY_BONES[:, 0]] & valid[..., BODY_BONES[:, 1]]).float()
+    bone = (((lp - lt) / lt.clamp(min=0.05)) ** 2 * mb).sum() / mb.sum().clamp(min=1)
+    parts = {"recon": recon.item(), "vel": vel.item(), "fk": fk.item(), "foot": foot.item(), "bone": bone.item()}
+    total = weights[0] * recon + weights[1] * vel + weights[2] * fk + weights[3] * foot + bone_weight * bone
     return total, parts
 
 
 class EDGEDiffusion:
     def __init__(self, model, normalizer, steps=1000, music_drop=0.25, genre_drop=0.25, guidance=2.0,
-                 weights=EDGE_WEIGHTS):
+                 weights=EDGE_WEIGHTS, bone_weight=0.0):
         self.model, self.normalizer, self.T = model, normalizer, steps
         self.ac = cosine_alphas_cumprod(steps)
         self.music_drop, self.genre_drop, self.guidance, self.weights = music_drop, genre_drop, guidance, weights
+        self.bone_weight = bone_weight
 
     def _ac(self, t, device):
         return self.ac.to(device)[t].view(-1, 1, 1)
@@ -108,7 +122,7 @@ class EDGEDiffusion:
         g = torch.where(torch.rand(B, device=x0.device) < self.genre_drop,
                         torch.full_like(genre, self.model.n_genres), genre)
         pred = self.model(x_t, cond, t, g, keep_music).float()      # losses in float32 under autocast
-        return motion_losses(pred, x0, valid, root_valid, self.normalizer, self.weights)
+        return motion_losses(pred, x0, valid, root_valid, self.normalizer, self.weights, self.bone_weight)
 
     def predict(self, x, cond, t, genre, guidance):
         keep = torch.ones(x.shape[0], dtype=torch.bool, device=x.device)
@@ -163,11 +177,11 @@ class EDGEDiffusion:
         return torch.cat(out, 0)
 
 
-def gru_loss(model, x0, cond, genre, valid, root_valid, normalizer, input_noise=0.02):
+def gru_loss(model, x0, cond, genre, valid, root_valid, normalizer, input_noise=0.02, bone_weight=0.0):
     """Teacher forcing with noise on the previous-frame input; same losses as the diffusion model."""
     prev = torch.cat([x0[:, :1], x0[:, :-1]], 1)
     pred, _ = model(prev + input_noise * torch.randn_like(prev), cond, genre)
-    return motion_losses(pred.float(), x0, valid, root_valid, normalizer)
+    return motion_losses(pred.float(), x0, valid, root_valid, normalizer, bone_weight=bone_weight)
 
 
 @torch.no_grad()

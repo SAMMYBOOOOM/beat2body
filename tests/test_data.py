@@ -51,12 +51,19 @@ def data_root(tmp_path):
 
 
 def test_item_layout(data_root):
-    x = DanceClips("dwpose", "val", seq_len=48)[0]
+    x = DanceClips("dwpose", "val", seq_len=48, scale_norm="dataset")[0]
     m = x["motion"]
     assert m.shape == (48, 38) and x["audio"].shape == (48, 37) and x["category"].item() == 1
     assert torch.allclose(m[0, ROOT], torch.tensor([0.0, 1.6]))          # (960, 700) - centre, / scale 100
     assert (m[:29, CONTACT] == 1).all() and (m[31:, CONTACT] == 0).all()   # ankles stop being still at frame 30
     assert torch.nonzero(x["beats"]).flatten().tolist() == [2, 17, 32, 47]
+
+
+def test_video_scale_norm_makes_torso_one(data_root):
+    from beat2body.data import torso_length
+    m = DanceClips("dwpose", "val", seq_len=48)[0]["motion"].numpy()
+    kp = m[:, JOINTS].reshape(48, 17, 2)
+    assert abs(torso_length(kp, np.ones((48, 17), bool)) - 1.0) < 1e-5
 
 
 def test_beat_phase():
