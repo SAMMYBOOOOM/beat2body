@@ -3,6 +3,7 @@
     python -m beat2body aws upload-data --tool dwpose
     python -m beat2body aws submit --instance ml.g5.2xlarge --max-hours 4 -- --model diffusion --steps 60000
     python -m beat2body aws status [JOB]          # latest beat2body job if JOB is omitted
+    python -m beat2body aws progress [JOB ...]    # per-checkpoint table (speed, beat power, ...) of running jobs
     python -m beat2body aws download JOB          # model.pt, metrics, samples -> runs/JOB/
     python -m beat2body aws download JOB --live   # progress of a running job (metrics, samples, snapshots)
     python -m beat2body aws pose --videos ids.txt --shards 4 --instances ml.g6.xlarge ml.g6.xlarge:spot ...
@@ -54,6 +55,9 @@ def add_args(p):
     sb.add_argument("train_args", nargs=argparse.REMAINDER, help="-- then options for `beat2body train`")
     st = sub.add_parser("status", help="job status and latest training metrics")
     st.add_argument("job", nargs="?")
+    pg = sub.add_parser("progress", help="per-checkpoint training checks of jobs (default: all running ones)")
+    pg.add_argument("jobs", nargs="*", help="job names or any part of them (e.g. the 8-character id)")
+    pg.add_argument("--last", type=int, default=3, help="checkpoints shown per job (0 = all)")
     dl = sub.add_parser("download", help="download a job's outputs to runs/JOB/")
     dl.add_argument("job")
     dl.add_argument("--live", action="store_true",
@@ -70,13 +74,13 @@ def add_args(p):
     po.add_argument("--dry-run", action="store_true")
     pd = sub.add_parser("pose-download", help="download pose jobs' raw outputs (also while they run)")
     pd.add_argument("prefixes", nargs="+", help="checkpoint prefixes printed by `aws pose`")
-    for sp in (up, sb, st, dl, po, pd):
+    for sp in (up, sb, st, pg, dl, po, pd):
         sp.add_argument("--bucket", default=None)
 
 
 def run(args):
     {"upload-data": upload_data, "submit": submit, "status": status, "download": download, "pose": pose,
-     "pose-download": pose_download}[args.aws_cmd](args)
+     "pose-download": pose_download, "progress": progress}[args.aws_cmd](args)
 
 
 def _clients():
@@ -302,6 +306,88 @@ def status(args):
             print("  last log lines:\n    " + "\n    ".join(lines[-8:]))
     except logs.exceptions.ResourceNotFoundException:
         print("  (no logs yet)")
+
+
+def _job_metrics(logs, job):
+    """All JSON metric lines of a job's CloudWatch log, in order."""
+    import json
+    out = []
+    try:
+        streams = logs.describe_log_streams(logGroupName="/aws/sagemaker/TrainingJobs", logStreamNamePrefix=job)
+    except logs.exceptions.ResourceNotFoundException:
+        return out
+    for s in streams["logStreams"]:
+        token = None
+        while True:
+            kw = dict(logGroupName="/aws/sagemaker/TrainingJobs", logStreamName=s["logStreamName"], startFromHead=True)
+            if token:
+                kw["nextToken"] = token
+            r = logs.get_log_events(**kw)
+            for e in r["events"]:
+                if e["message"].startswith('{"step"'):
+                    try:
+                        out.append(json.loads(e["message"]))
+                    except ValueError:
+                        pass
+            if r["nextForwardToken"] == token:
+                break
+            token = r["nextForwardToken"]
+    return out
+
+
+def progress(args):
+    """Table of the training checks (every --sample-every steps) of one or more jobs."""
+    session, _ = _clients()
+    sm, logs = session.client("sagemaker"), session.client("logs")
+    if args.jobs:
+        jobs = []
+        for q in args.jobs:
+            found = [j for page in sm.get_paginator("list_training_jobs").paginate(
+                NameContains=q, SortBy="CreationTime", SortOrder="Descending") for j in page["TrainingJobSummaries"]]
+            if not found:
+                sys.exit(f"no training job matches {q!r}")
+            jobs.append(found[0]["TrainingJobName"])
+    else:
+        jobs = [j["TrainingJobName"] for j in sm.list_training_jobs(
+            NameContains=JOB_PREFIX, StatusEquals="InProgress", SortBy="CreationTime", SortOrder="Ascending",
+            MaxResults=20)["TrainingJobSummaries"]]
+        if not jobs:
+            print("no running beat2body jobs; name some: python -m beat2body aws progress <job> ...")
+    for job in jobs:
+        d = sm.describe_training_job(TrainingJobName=job)
+        rows = _job_metrics(logs, job)
+        start = next((r for r in rows if r.get("event") == "start"), {})
+        last = [r for r in rows if "loss" in r]
+        total = start.get("steps") or d.get("HyperParameters", {}).get("steps", "?")
+        line = (f"\n{job}\n  {d['TrainingJobStatus']} / {d.get('SecondaryStatus')}, "
+                f"{d['ResourceConfig']['InstanceType']}")
+        if d.get("EnableManagedSpotTraining"):
+            line += " (spot)"
+        if last:
+            x = last[-1]
+            line += f", step {x['step']}/{total}, {x.get('steps_per_s', 0):.1f} steps/s"
+            if isinstance(total, int) and x.get("steps_per_s"):
+                line += f", ~{(total - x['step']) / x['steps_per_s'] / 60:.0f} min left"
+        print(line)
+        if start:
+            keys = ("recipe", "d_model", "layers", "bone_weight", "energy_weight", "scale_norm", "select")
+            print("  " + ", ".join(f"{k} {start.get(k)}" for k in keys if k in start))
+        val = {r["step"]: r["val_loss"] for r in rows if "val_loss" in r}
+        sel = {r["step"]: r["select"].get("val_fid_k") for r in rows if isinstance(r.get("select"), dict)}
+        checks = [(r["step"], r["sample"]) for r in rows if isinstance(r.get("sample"), dict)]
+        if args.last:
+            checks = checks[-args.last:]
+        if not checks:
+            print("  (no training checks yet)")
+            continue
+        print(f"  {'step':>7} {'val_loss':>9} {'speed':>6} {'beat_pow':>9} {'body_cv':>8} {'(real)':>7} "
+              f"{'val_fid_k':>10}")
+        for step, x in checks:
+            fid = sel.get(step)
+            print(f"  {step:>7} {val.get(step, float('nan')):9.3f} {x.get('speed_ratio', float('nan')):6.2f} "
+                  f"{x.get('beat_power', float('nan')):9.2f} {x.get('bone_cv', float('nan')):8.3f} "
+                  f"{x.get('bone_cv_real', float('nan')):7.3f} {'' if fid is None else f'{fid:10.1f}'}")
+    print("\nspeed / beat_pow: generated / real on 8 val clips (1 = real); body_cv: body-size variation (match real)")
 
 
 def download_live(session, d, out, snapshots=True):
