@@ -13,6 +13,9 @@ Data on Hugging Face:
     hf download | card | upload
 Training (needs torch):
     data          check the PyTorch data loader (shapes, NaNs, audio stats, speed)
+    train         train the diffusion model or the GRU baseline (locally or on SageMaker)
+    sample        generate a dance for a dataset video's music with a trained model
+    aws           SageMaker: upload-data | submit | status | download
 Inspection:
     render        stick-figure video of real or generated keypoints
 
@@ -37,8 +40,13 @@ def _commands():
     commands = {"clean": clean, "audio": audio, "beats": beats, "clips": clips, "all": run_all,
                 "frames": frames, "audit": audit, "hf": hf, "render": render}
     try:  # training commands need torch (pip install -e ".[train]")
-        from beat2body import data
+        from beat2body import data, train
         commands["data"] = data
+        commands["train"] = train
+        commands["sample"] = SimpleNamespace(DOC=train.SAMPLE_DOC, add_args=train.add_sample_args,
+                                             run=train.run_sample)
+        from beat2body import aws
+        commands["aws"] = aws
     except ImportError:
         pass
     return commands, pose_pkg
