@@ -23,7 +23,7 @@ Videos (pose, audio, render) also need `ffmpeg` on the PATH.
 
 ## Data
 
-Processed data is on Hugging Face, one **private** dataset per pose tool, with the same layout as `2d/`:
+Processed data is on Hugging Face, one public dataset per pose tool, with the same layout as `2d/`:
 
 | Dataset | Pose tool |
 | --- | --- |
@@ -32,7 +32,7 @@ Processed data is on Hugging Face, one **private** dataset per pose tool, with t
 | [`SizheZ03/AISTDance_mediapipe`](https://huggingface.co/datasets/SizheZ03/AISTDance_mediapipe) | MediaPipe |
 
 The account is taken from `--org`, else `BEAT2BODY_HF_ORG`, else the logged-in account
-(`hf auth login` or `HF_TOKEN`); private datasets need a token to download. The original public
+(`hf auth login` or `HF_TOKEN`); The original public
 copies (old per-video split) are under `SAMBOOM/`.
 
 ```bash
@@ -82,7 +82,7 @@ Run `ruff check beat2body` and `pytest` before committing.
 ## Status
 - [x] 2D data pipeline (pose → cleaning → audio features → clips), 10 genres × 3 pose tools, on Hugging Face
 - [x] Code organized as the `beat2body` package; held-out-song test split
-- [x] New split + dataset cards published (private, SizheZ03)
+- [x] New split + dataset cards published (public, SizheZ03); beat labels fixed (published AIST tempos)
 - [x] PyTorch data loader (`beat2body.data`)
 - [ ] 2D baseline model (audio encoder + category embedding + GRU decoder)
 - [ ] 2D training (AWS) + evaluation (beat alignment, genre consistency, diversity)

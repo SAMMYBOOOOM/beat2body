@@ -110,7 +110,7 @@ def run(args):
     beat_frames = set()
     if beats is not None:
         for b in beats:
-            beat_frames.update(range(int(b), int(b) + 3))   # flash for 3 frames (0.1 s)
+            beat_frames.update(range(int(round(b)), int(round(b)) + 3))   # flash for 3 frames (0.1 s)
 
     frames = None
     ov_w = 0

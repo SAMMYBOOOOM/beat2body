@@ -33,6 +33,17 @@ def music_id(video_id):
     return m.group(1) if m else None
 
 
+def music_bpm(video_id):
+    """Published tempo of an AIST song (https://aistdancedb.ongaaccel.jp/data_formats/), None otherwise.
+
+    Every genre uses 80, 90, 100, 110, 120, 130 BPM for songs m??0 .. m??5; House uses 110 .. 135."""
+    m = re.search(r"_m([A-Z]{2})(\d)_", video_id)
+    if not m or m.group(1) not in GENRES:
+        return None
+    n = int(m.group(2))
+    return 110 + 5 * n if m.group(1) == "HO" else 80 + 10 * n
+
+
 def list_categories(video_dir=None):
     """Categories are the sub-folders of raw_video/ that contain videos."""
     video_dir = video_dir or paths.raw_video_dir()

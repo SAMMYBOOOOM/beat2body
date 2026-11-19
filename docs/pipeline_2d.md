@@ -152,7 +152,7 @@ python -m beat2body audio --categories la_hiphop house
 - Audio is extracted as mono 22.05 kHz to `2d/audio/<category>/<video_id>.wav`.
 - **Log-mel spectrogram:** `n_mels=64`, `hop_length=735` (22050 / 30), so one feature frame corresponds to one motion frame → `features/audio_mel/<video_id>.npy` `(T, 64)`.
 - **Onset strength envelope:** `librosa.onset.onset_strength` → `features/audio_onset/` `(T,)`.
-- **Beats:** `librosa.beat.beat_track` → `features/beats/`, as frame indices in motion-frame units, for the beat-alignment loss and evaluation.
+- **Beats** → `features/beats/`, as beat times in motion frames (float), for the beat-alignment loss and evaluation. AIST songs have a published constant tempo (80–130 BPM; House 110–135, see [data formats](https://aistdancedb.ongaaccel.jp/data_formats/)), so their beats are a grid at exactly that tempo. Its phase comes from `librosa.beat.beat_track` where librosa found the right tempo, else from the onset envelope. librosa alone was wrong for 10 of 60 songs (80 BPM tracked as 164 or 106, `mHO5`, `mJB1`); this was fixed on 2026-11-18. For 4 songs (`mHO4`, `mJS3`, `mKR1`, `mLH4`, 12 videos) the audio cannot clearly separate beat from off-beat, so their phase may be half a beat off. `python -m beat2body beats` recomputes the beats from the onset features, and `python -m beat2body audit --tool <tool>` checks them against the published tempos.
 
 ### 4.6 Alignment
 
@@ -206,7 +206,7 @@ tests/                     # pytest
 
 **Hugging Face.** `keypoints/<tool>/`, `features/`, `clips/<tool>/` and `categories.json` are published as one dataset per tool, with the same paths under `2d/`:
 
-| Dataset (private) | Tool |
+| Dataset | Tool |
 | --- | --- |
 | [`SizheZ03/AISTDance_dwpose`](https://huggingface.co/datasets/SizheZ03/AISTDance_dwpose) | DWPose (recommended for training: 99.7% of joints observed) |
 | [`SizheZ03/AISTDance_openpose`](https://huggingface.co/datasets/SizheZ03/AISTDance_openpose) | OpenPose (official build) |

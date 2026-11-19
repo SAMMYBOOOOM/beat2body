@@ -4,9 +4,11 @@ Data preparation (README 4.2-4.7), in order:
     pose <tool>   4.3 pose estimation (dwpose | mediapipe | openpose)
     clean         4.4 keypoint cleaning + normalization (one tool)
     audio         4.5 audio features (shared by all tools)
+    beats         recompute beats from onset features (published AIST tempo)
     clips         4.6 + 4.7 windows and train / val / test split (one tool)
     all           audio + clean + clips for several tools
     frames        4.2 optional JPEG dump
+    audit         check a tool's training data (labels, split, clips, beats)
 Data on Hugging Face:
     hf download | card | upload
 Training (needs torch):
@@ -19,6 +21,7 @@ Use `python -m beat2body <command> --help` for options. The data root defaults t
 """
 import argparse
 import sys
+from types import SimpleNamespace
 
 from beat2body import paths
 
@@ -29,9 +32,10 @@ def _commands():
     # imported lazily so `--help` works without the optional dependencies of each step
     import beat2body.pose as pose_pkg
     from beat2body import render
-    from beat2body.prep import audio, clean, clips, frames, hf, run_all
-    commands = {"clean": clean, "audio": audio, "clips": clips, "all": run_all, "frames": frames,
-                "hf": hf, "render": render}
+    from beat2body.prep import audio, audit, clean, clips, frames, hf, run_all
+    beats = SimpleNamespace(DOC=audio.BEATS_DOC, add_args=audio.add_beats_args, run=audio.run_beats)
+    commands = {"clean": clean, "audio": audio, "beats": beats, "clips": clips, "all": run_all,
+                "frames": frames, "audit": audit, "hf": hf, "render": render}
     try:  # training commands need torch (pip install -e ".[train]")
         from beat2body import data
         commands["data"] = data

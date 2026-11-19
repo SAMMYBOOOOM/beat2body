@@ -22,7 +22,7 @@ cut into overlapping windows.
 Output:
     <data>/clips/<tool>/<split>/<category>__<video_id>__<start>.npz
         keypoints (W, 17, 2), valid (W, 17), mel (W, 64), onset (W,),
-        beats (beat frame indices inside the window), category, category_index,
+        beats (beat times in frames inside the window, float), category, category_index,
         video_id, start, end, fps
     <data>/clips/<tool>/meta.csv
         clip_path, audio_feat_path, category, start_frame, end_frame, split, video_id, dancer, music
@@ -157,7 +157,7 @@ def write_clips(tool, cat, vid, split, cat_index, args):
         os.makedirs(os.path.dirname(out), exist_ok=True)
         b = beats[(beats >= s) & (beats < e)] - s
         np.savez_compressed(out, keypoints=kp["keypoints"][s:e], valid=valid, mel=mel[s:e],
-                            onset=onset[s:e], beats=b.astype(np.int32), category=cat,
+                            onset=onset[s:e], beats=b.astype(np.float32), category=cat,
                             category_index=cat_index[cat], video_id=vid, start=s, end=e, fps=kp["fps"])
         rows.append(dict(clip_path=paths.rel(out), audio_feat_path=paths.rel(mel_path), category=cat,
                          start_frame=s, end_frame=e, split=split, video_id=vid,

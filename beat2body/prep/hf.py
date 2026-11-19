@@ -203,7 +203,8 @@ and audio features (log-mel, onset strength, beat positions).
 2d/keypoints/{tool}/normalization.json          cleaning + normalization parameters
 2d/features/audio_mel/<video_id>.npy            (T,64) log-mel (dB), 22.05 kHz, hop 735 (1 frame = 1 motion frame)
 2d/features/audio_onset/<video_id>.npy          (T,) onset strength
-2d/features/beats/<video_id>.npy                beat frame indices (librosa beat_track)
+2d/features/beats/<video_id>.npy                beat times in frames (float): grid at the published AIST tempo,
+                                                phase fitted to the onset envelope
 2d/clips/{tool}/meta.csv                        one row per clip: clip_path, audio_feat_path, category,
                                                 start_frame, end_frame, split, video_id, dancer, music
 2d/clips/{tool}/split.json                      split options and songs per split

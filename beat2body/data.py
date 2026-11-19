@@ -8,7 +8,7 @@ Each item is a dict of tensors for one clip (W = seq_len or the clip length, 240
     keypoints  (W, 17, 2) float32  COCO-17, pelvis-centred, in torso lengths
     valid      (W, 17)    bool     observed joints (loss mask)
     audio      (W, 65)    float32  log-mel (64) + onset strength (1), normalized with train-split stats
-    beats      (W,)       float32  1.0 on beat frames, else 0.0
+    beats      (W,)       float32  1.0 on the frame nearest each beat, else 0.0
     category   ()         int64    index from categories.json
     video_id, start                for bookkeeping / rendering (start = first frame in the video)
 
@@ -170,7 +170,7 @@ class DanceClips(Dataset):
         with np.load(os.path.join(paths.base_dir(), r["clip_path"])) as d:
             W = len(d["keypoints"])
             beats = np.zeros(W, np.float32)
-            b = d["beats"]
+            b = np.round(d["beats"]).astype(int)          # beat times are fractional frames
             beats[b[(b >= 0) & (b < W)]] = 1.0
             return {
                 "keypoints": d["keypoints"].astype(np.float32),
