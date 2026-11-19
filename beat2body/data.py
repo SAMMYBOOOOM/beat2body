@@ -80,7 +80,7 @@ def ensure_data(tool, org=None):
 
     from beat2body.prep import hf
     print(f"[data] {paths.rel(paths.meta_csv_path(tool))} missing, downloading from Hugging Face")
-    hf.download(argparse.Namespace(tool=[tool], org=org, parts=list(hf.PARTS), revision=None))
+    hf.download(argparse.Namespace(tool=[tool], org=org, parts=["keypoints", "features", "meta"], revision=None))
 
 
 # ---------------------------------------------------------------------------

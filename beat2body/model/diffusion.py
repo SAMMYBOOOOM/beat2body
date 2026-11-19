@@ -107,7 +107,7 @@ class EDGEDiffusion:
         keep_music = torch.rand(B, device=x0.device) >= self.music_drop
         g = torch.where(torch.rand(B, device=x0.device) < self.genre_drop,
                         torch.full_like(genre, self.model.n_genres), genre)
-        pred = self.model(x_t, cond, t, g, keep_music)
+        pred = self.model(x_t, cond, t, g, keep_music).float()      # losses in float32 under autocast
         return motion_losses(pred, x0, valid, root_valid, self.normalizer, self.weights)
 
     def predict(self, x, cond, t, genre, guidance):
@@ -167,7 +167,7 @@ def gru_loss(model, x0, cond, genre, valid, root_valid, normalizer, input_noise=
     """Teacher forcing with noise on the previous-frame input; same losses as the diffusion model."""
     prev = torch.cat([x0[:, :1], x0[:, :-1]], 1)
     pred, _ = model(prev + input_noise * torch.randn_like(prev), cond, genre)
-    return motion_losses(pred, x0, valid, root_valid, normalizer)
+    return motion_losses(pred.float(), x0, valid, root_valid, normalizer)
 
 
 @torch.no_grad()

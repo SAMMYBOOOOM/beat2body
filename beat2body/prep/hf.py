@@ -13,8 +13,9 @@ The datasets have the same layout as the data root, under "2d/":
     python -m beat2body hf upload --tool dwpose --prune                    # data + card
 
 Account (namespace) of the datasets, first match wins:
-    --org NAME  >  BEAT2BODY_HF_ORG  >  the logged-in account (`hf auth login` or HF_TOKEN)  >  SAMBOOM
-SAMBOOM holds the original public datasets and is only a read-only fallback. `upload` creates
+    --org NAME  >  BEAT2BODY_HF_ORG  >  the logged-in account (`hf auth login` or HF_TOKEN)  >  SizheZ03
+SizheZ03 holds the current public datasets, so downloads work without logging in. (SAMBOOM has
+the original datasets with the old per-video split.) `upload` creates
 the dataset in your account if needed, private unless --public. Private datasets need a token
 to download as well (e.g. HF_TOKEN on the training machine).
 """
@@ -29,9 +30,10 @@ from beat2body import paths
 from beat2body.paths import SPLITS, TOOLS
 
 DOC = __doc__
-FALLBACK_ORG = "SAMBOOM"  # original public datasets (read-only fallback)
+FALLBACK_ORG = "SizheZ03"  # current public datasets (read-only fallback when not logged in)
 ORG_ENV = "BEAT2BODY_HF_ORG"
 PARTS = ("keypoints", "features", "clips")
+DOWNLOAD_PARTS = PARTS + ("meta",)   # meta: only clips/<tool>/meta.csv + split.json (what training needs)
 
 
 def repo_id(org, tool):
@@ -67,7 +69,8 @@ def add_args(p):
                         help=f"dataset namespace (default: ${ORG_ENV}, else your logged-in account, "
                              f"else {FALLBACK_ORG} for downloads)")
         if name != "card":
-            sp.add_argument("--parts", nargs="+", choices=PARTS, default=list(PARTS))
+            sp.add_argument("--parts", nargs="+", choices=DOWNLOAD_PARTS if name == "download" else PARTS,
+                            default=list(PARTS), help="for training: keypoints features meta")
         if name == "download":
             sp.add_argument("--revision", default=None, help="branch, tag or commit of the dataset")
         if name == "upload":
@@ -101,6 +104,8 @@ def patterns(tool, parts):
         p.append(f"{d}/features/**")
     if "clips" in parts:
         p.append(f"{d}/clips/{tool}/**")
+    elif "meta" in parts:
+        p += [f"{d}/clips/{tool}/meta.csv", f"{d}/clips/{tool}/split.json"]
     return p
 
 

@@ -19,6 +19,7 @@ Resumable checkpoints go to --checkpoint-dir (SageMaker: /opt/ml/checkpoints, ke
 Validation: loss on val windows, and for generated val windows the joint speed relative to real
 motion (`speed_ratio`, near 0 = frozen) and the share of frames with predicted foot contact.
 """
+import contextlib
 import copy
 import json
 import os
@@ -87,6 +88,7 @@ def add_args(p):
                    if os.environ.get("SM_MODEL_DIR") else None)
     g.add_argument("--download", action="store_true", help="download the dataset from Hugging Face if missing")
     g.add_argument("--device", default="auto")
+    g.add_argument("--amp", action="store_true", help="bfloat16 mixed precision on CUDA (~1.5-2x faster)")
     g.add_argument("--seed", type=int, default=0)
     g.add_argument("--tiny", action="store_true", help="small model, frequent logging: smoke test")
     g.add_argument("--max-train-clips", type=int, default=None,
@@ -211,7 +213,13 @@ def run(args):
     loader = torch.utils.data.DataLoader(train, batch_size=args.batch_size, shuffle=True, drop_last=True)
     val_loader = torch.utils.data.DataLoader(val, batch_size=args.batch_size, shuffle=False)
 
+    amp = torch.autocast("cuda", dtype=torch.bfloat16) if args.amp and dev == "cuda" else contextlib.nullcontext()
+
     def loss_on(net, b):
+        with amp:
+            return _loss_on(net, b)
+
+    def _loss_on(net, b):
         x0 = norm.norm(b["motion"].to(dev))
         cond, genre = b["audio"].to(dev), b["category"].to(dev)
         valid, root_valid = b["valid"].to(dev), b["root_valid"].to(dev)
