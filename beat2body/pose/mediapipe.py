@@ -1,41 +1,36 @@
-"""4.3 Pose estimation with MediaPipe Pose Landmarker (GPU if available, else CPU).
+"""MediaPipe Pose Landmarker (GPU if available, else CPU).
 
 Install:
     pip install mediapipe opencv-python
 
 The model file (pose_landmarker_heavy.task, ~30 MB) is downloaded from Google
 on first run to ~/.cache/beat2body/. Use --model full or lite for a faster,
-less accurate variant.
+less accurate variant. On Colab use --device cpu (no OpenGL for the GPU path).
 
-    python 2d/scripts/pose_mediapipe.py --categories la_hiphop house --preview 2
+    python -m beat2body pose mediapipe --categories la_hiphop house --preview 2
 
-Output: 2d/keypoints/<category>/<video_id>_mediapipe.npz
-    keypoints (T, 17, 3)  COCO-17 x, y (pixels), visibility   <- used by 4.4
-    native    (T, 33, 3)  MediaPipe's 33 landmarks
-Next step (4.4): python 2d/scripts/pipeline.py clean --tool mediapipe
+native: (T, 33, 3) MediaPipe's 33 landmarks (x, y in pixels, visibility).
 """
 import os
-import sys
 import urllib.request
 
 import numpy as np
 
-sys.dont_write_bytecode = True  # keep the repo free of __pycache__ folders
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from pipeline import MEDIAPIPE33_TO_COCO17, pose_arg_parser, run_pose_tool  # noqa: E402
+from beat2body.pose.runner import add_common_args, run_pose_tool
+from beat2body.skeleton import MEDIAPIPE33_NAMES, MEDIAPIPE33_TO_COCO17
 
 TOOL = "mediapipe"
+DOC = __doc__
 CACHE = os.path.expanduser("~/.cache/beat2body")
 MODEL_URL = ("https://storage.googleapis.com/mediapipe-models/pose_landmarker/"
              "pose_landmarker_{v}/float16/latest/pose_landmarker_{v}.task")
-NATIVE_NAMES = [
-    "nose", "left_eye_inner", "left_eye", "left_eye_outer", "right_eye_inner", "right_eye",
-    "right_eye_outer", "left_ear", "right_ear", "mouth_left", "mouth_right",
-    "left_shoulder", "right_shoulder", "left_elbow", "right_elbow", "left_wrist", "right_wrist",
-    "left_pinky", "right_pinky", "left_index", "right_index", "left_thumb", "right_thumb",
-    "left_hip", "right_hip", "left_knee", "right_knee", "left_ankle", "right_ankle",
-    "left_heel", "right_heel", "left_foot_index", "right_foot_index",
-]
+
+
+def add_args(p):
+    add_common_args(p, TOOL)
+    p.add_argument("--model", default="heavy", choices=["lite", "full", "heavy"])
+    p.add_argument("--device", default="auto", choices=["auto", "gpu", "cpu"],
+                   help="auto: try the GPU and fall back to the CPU if MediaPipe cannot use it")
 
 
 def model_path(variant):
@@ -47,13 +42,7 @@ def model_path(variant):
     return path
 
 
-def main():
-    p = pose_arg_parser(TOOL, __doc__)
-    p.add_argument("--model", default="heavy", choices=["lite", "full", "heavy"])
-    p.add_argument("--device", default="auto", choices=["auto", "gpu", "cpu"],
-                   help="auto: try the GPU and fall back to the CPU if MediaPipe cannot use it")
-    args = p.parse_args()
-
+def run(args):
     import cv2
     import mediapipe as mp
     from mediapipe.tasks import python as mp_python
@@ -98,13 +87,9 @@ def main():
             if not res.pose_landmarks:
                 return None, None
             h, w = frame_bgr.shape[:2]
-            native = np.array([[l.x * w, l.y * h, 1.0 if l.visibility is None else l.visibility]
-                               for l in res.pose_landmarks[0]], np.float32)
+            native = np.array([[lm.x * w, lm.y * h, 1.0 if lm.visibility is None else lm.visibility]
+                               for lm in res.pose_landmarks[0]], np.float32)
             return native[MEDIAPIPE33_TO_COCO17], native
         return infer
 
-    run_pose_tool(TOOL, args, make_infer, NATIVE_NAMES, color=(0, 200, 255))
-
-
-if __name__ == "__main__":
-    main()
+    run_pose_tool(TOOL, args, make_infer, MEDIAPIPE33_NAMES, color=(0, 200, 255))

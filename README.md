@@ -1,50 +1,89 @@
-# Music2Dance
+# beat2body (Music2Dance)
 
 Music-conditioned dance motion generation: given an audio clip and a dance
 category, generate a plausible skeleton sequence.
 
-The project is organized in two phases. **Only the 2D phase is actively being
-developed right now.**
+| Phase  | Output                                   | Status     | Docs                                       |
+| ------ | ---------------------------------------- | ---------- | ------------------------------------------ |
+| **2D** | `(T, J, 2)` joints + stick-figure `.mp4` | 🚧 Active  | **[docs/pipeline_2d.md](docs/pipeline_2d.md)** |
+| **3D** | `(T, J, 3)` joints                       | ⏳ Planned | [docs/3d.md](docs/3d.md)                   |
 
-| Phase  | Output                                   | Status     | Docs                                 |
-| ------ | ---------------------------------------- | ---------- | ------------------------------------ |
-| **2D** | `(T, J, 2)` joints + stick-figure `.mp4` | 🚧 Active  | **[2d →](2d/README.md)**             |
-| **3D** | `(T, J, 3)` joints                       | ⏳ Planned | [3d →](3d/README.md) *(placeholder)* |
+👉 **Read [docs/pipeline_2d.md](docs/pipeline_2d.md)**: data pipeline, baseline architecture,
+training losses, data format and split. The task list is in [NEXT_STEPS.md](NEXT_STEPS.md).
 
-## Start here
+## Setup
 
-👉 **Read [2d/README.md](2d/README.md)** — data pipeline, baseline
-architecture, training losses, and output format.
+```bash
+pip install -e ".[train]"         # training machine: torch, huggingface_hub, opencv
+pip install -e ".[train,audio,dev]"  # + audio features (librosa) and tests
+python -m beat2body --help
+```
+
+Videos (pose, audio, render) also need `ffmpeg` on the PATH.
+
+## Data
+
+Processed data is on Hugging Face, one public dataset per pose tool, with the same layout as `2d/`:
+
+| Dataset | Pose tool |
+| --- | --- |
+| [`SizheZ03/AISTDance_dwpose`](https://huggingface.co/datasets/SizheZ03/AISTDance_dwpose) | DWPose (used for training) |
+| [`SizheZ03/AISTDance_openpose`](https://huggingface.co/datasets/SizheZ03/AISTDance_openpose) | OpenPose |
+| [`SizheZ03/AISTDance_mediapipe`](https://huggingface.co/datasets/SizheZ03/AISTDance_mediapipe) | MediaPipe |
+
+The account is taken from `--org`, else `BEAT2BODY_HF_ORG`, else the logged-in account
+(`hf auth login` or `HF_TOKEN`); The original public
+copies (old per-video split) are under `SAMBOOM/`.
+
+```bash
+export HF_TOKEN=...  BEAT2BODY_HF_ORG=SizheZ03     # e.g. on AWS
+python -m beat2body hf download --tool dwpose      # into 2d/, no videos or GPU needed
+python -m beat2body data --tool dwpose             # check the PyTorch loader
+python -m beat2body clips --tool dwpose            # optional: rebuild clips / split locally
+python -m beat2body render --video-id gLH_sFM_c01_d16_mLH0_ch01
+```
+
+Split: train / val by video (shared songs); **one song per genre is held out as the test set**
+for the final evaluation on unseen music.
+
+The videos come from the [AIST Dance Video Database](https://aistdancedb.ongaaccel.jp/)
+([data formats](https://aistdancedb.ongaaccel.jp/data_formats/)), which is free for academic
+research only and must be cited (Tsuchida et al., ISMIR 2019); see its
+[terms of use](https://aistdancedb.ongaaccel.jp/terms_of_use/).
 
 ## Repository layout
 
 ```text
-.  
-├── 2d/ # 2D skeleton pipeline, model, training (current focus)  
-│ ├── README.md  
-│ ├── audio/ # extracted .wav per video (hiphop/, house/)  
-│ ├── clips/ # sliding-window clips (train/, val/, test/)  
-│ ├── features/ # audio_mel/, audio_onset/, beats/  
-│ ├── frames/ # extracted video frames (can be deleted after keypoints)  
-│ ├── keypoints/ # (T, J, 3) joints per video (hiphop/, house/)  
-│ └── raw_video/ # source videos (hiphop/, house/)  
-└── 3d/ # future 3D extension
+.
+├── beat2body/              # Python package; run as `python -m beat2body <command>`
+│   ├── cli.py              # command line
+│   ├── paths.py            # data folder layout (default data root: 2d/)
+│   ├── aist.py             # AIST naming: genres, dancers, songs
+│   ├── skeleton.py         # COCO-17 joints, tool joint mappings
+│   ├── video.py            # fixed-fps frame reading, drawing, mp4 writing
+│   ├── data.py             # PyTorch Dataset / DataLoader for training
+│   ├── pose/               # 4.3 pose tools: dwpose.py, mediapipe.py, openpose.py
+│   ├── prep/               # 4.2/4.4-4.7: frames, clean, audio, clips (+ split), all, hf
+│   └── render.py           # stick-figure videos of real or generated keypoints
+├── tests/                  # pytest
+├── scripts/                # colab_build_openpose.sh
+├── docs/                   # pipeline_2d.md, 3d.md
+├── 2d/                     # data root
+│   ├── raw_video/<genre>/  # AIST source videos (10 genres x 21, tracked in git)
+│   ├── categories.json     # genre -> embedding index (tracked)
+│   └── keypoints/ features/ clips/ audio/ frames/   # generated, ignored by git
+├── pyproject.toml
+└── NEXT_STEPS.md           # status and task list
 ```
 
+Development: code goes in the package as modules with a CLI entry point, not in notebooks.
+Run `ruff check beat2body` and `pytest` before committing.
+
 ## Status
-- [x] Repo skeleton
-- [ ] 2D data pipeline (frame extraction → pose → cleaning → audio features)
+- [x] 2D data pipeline (pose → cleaning → audio features → clips), 10 genres × 3 pose tools, on Hugging Face
+- [x] Code organized as the `beat2body` package; held-out-song test split
+- [x] New split + dataset cards published (public, SizheZ03); beat labels fixed (published AIST tempos)
+- [x] PyTorch data loader (`beat2body.data`)
 - [ ] 2D baseline model (audio encoder + category embedding + GRU decoder)
-- [ ] 2D training + evaluation (beat alignment, motion diversity)
+- [ ] 2D training (AWS) + evaluation (beat alignment, genre consistency, diversity)
 - [ ] 3D phase
-
-## Resources
-
-[Data Formats - AIST Dance Video Database (AIST Dance DB)](https://aistdancedb.ongaaccel.jp/data_formats/)
-
-
-### Datasets
-
-SAMBOOM/AISTDance_dwpose
-SAMBOOM/AISTDance_mediapipe
-SAMBOOM/AISTDance_openpose

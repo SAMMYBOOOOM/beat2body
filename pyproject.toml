@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "beat2body"
+version = "0.2.0"
+description = "Music- and genre-conditioned dance skeleton generation (AIST Dance DB)"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = ["numpy", "scipy"]
+
+[project.optional-dependencies]
+# training machine: download the processed data from Hugging Face, render results
+data = ["huggingface_hub", "opencv-python-headless"]
+# training (PyTorch data loader, model)
+train = ["torch", "huggingface_hub", "opencv-python-headless"]
+# 4.5 audio features
+audio = ["librosa"]
+# 4.3 pose tools (DWPose also needs: pip install --no-deps easy-dwpose)
+dwpose = ["onnxruntime-gpu", "huggingface_hub", "opencv-python-headless"]
+mediapipe = ["mediapipe", "opencv-python-headless"]
+openpose = ["torch", "huggingface_hub", "opencv-python-headless"]
+dev = ["pytest", "ruff"]
+
+[project.scripts]
+beat2body = "beat2body.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["beat2body*"]
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B"]
+ignore = ["E731"]  # small lambdas are used for local helpers
