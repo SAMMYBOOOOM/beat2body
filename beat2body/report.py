@@ -91,7 +91,13 @@ def run(args):
 
     # 1. training progress: the same val clip at each check
     groups = sample_files(args.run_dir)
-    for (vid, start), by_step in sorted(groups.items(), key=lambda kv: -len(kv[1]))[:args.progress_clips]:
+    # prefer clips from different videos
+    ranked, seen = [], set()
+    for key, by_step in sorted(groups.items(), key=lambda kv: -len(kv[1])):
+        if key[0] not in seen:
+            ranked.append((key, by_step))
+            seen.add(key[0])
+    for (vid, start), by_step in ranked[:args.progress_clips]:
         steps = sorted(by_step)
         pick = [steps[i] for i in np.linspace(0, len(steps) - 1, min(args.max_panels, len(steps))).round().astype(int)]
         pick = sorted(set(pick))
@@ -102,7 +108,7 @@ def run(args):
         seqs = [absolute(real)] + [absolute(np.load(by_step[s])["motion"]) for s in pick]
         titles = ["real dancer"] + [f"step {s:,}" for s in pick]
         b = np.load(paths.feature_path("beats", vid)) - start
-        path = os.path.join(out, f"progress_{cat}_{vid}.mp4")
+        path = os.path.join(out, f"progress_{cat}_{vid}_{start:04d}.mp4")
         write_panels(path, seqs, titles, b[(b >= 0) & (b < L)], args.size, audio_source(cat, vid), start / DEFAULT_FPS)
         videos.append({"file": os.path.basename(path), "kind": "progress", "video_id": vid, "genre": cat,
                        "music": aist.music_id(vid), "steps": pick})
