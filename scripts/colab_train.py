@@ -3,29 +3,40 @@
 Runtime -> Change runtime type -> GPU first. The script:
   1. clones (or updates) the code, without the 2.1 GB of raw videos, and installs it
   2. downloads the training data from Hugging Face (public, no login, ~120 MB)
-  3. mounts Google Drive; results and resumable checkpoints go to MyDrive/beat2body_runs/<RUN_NAME>
-  4. trains (rerun the cell after a disconnect: it resumes from the last checkpoint)
-  5. evaluates on the val songs (realism, energy, foot contact, drift detector) and renders one dance
+  3. mounts Google Drive; every run gets its own folder MyDrive/beat2body_runs/<name>
+  4. trains all RUNS at the same time on the one GPU (a small model uses ~2 GB of a T4's 15 GB), printing
+     a progress table every minute; each run's full log is in <name>/train.log
+  5. evaluates each run (realism, energy, foot contact, drift detector) and writes shareable videos
+     (<name>/report/: training progress + 20 s dances)
 
-Edit the settings below if needed. Mixed precision (--amp) is switched on automatically on GPUs that
-support bfloat16 (A100, L4, ...) and off on a T4.
+If Colab disconnects, run the cell again: finished runs are skipped and unfinished ones resume from
+their last checkpoint. Mixed precision (--amp) is on: float16 on a T4, bfloat16 on an A100 / L4.
 """
+import json
 import os
 import subprocess
 import sys
+import time
 
 # ----------------------------------------------------------------------------- settings
-RUN_NAME = "small_bone03"          # folder under MyDrive/beat2body_runs/
-# small model (7.1M parameters); use [] for the full EDGE size (46.9M)
-MODEL_ARGS = ["--d-model", "256", "--ff", "512", "--layers", "4", "--heads", "4"]
-STEPS = 20000                      # small: 20000 (~45-60 min on a T4); full EDGE size: 66000
-BONE_WEIGHT = 0.3                  # projected bone-length loss (0 = off); AWS runs the 1.0 version
-EXTRA_ARGS = ["--val-every", "2000", "--sample-every", "2000"]
-DEMO_VIDEO = "gLH_sFM_c01_d16_mLH4_ch05"   # a held-out test song (mLH4) to render at the end
+SMALL = ["--d-model", "256", "--ff", "512", "--layers", "4", "--heads", "4"]   # 7.1M parameters
+COMMON = ["--steps", "20000", "--val-every", "2000", "--sample-every", "2000", "--amp"]
+# one entry per run, trained in parallel; [] instead of SMALL = full EDGE size (46.9M)
+RUNS = {
+    "small_bone0": SMALL + COMMON + ["--bone-weight", "0"],     # per-video scale only (ablation)
+    "small_bone3": SMALL + COMMON + ["--bone-weight", "3"],     # stronger bone-length loss
+}
+# (bone weight 1.0 runs on AWS and 0.3 in small_bone03; add more entries to run more at once)
 REPO_URL = "https://github.com/novaz03/beat2body"
 BRANCH = "claude/relaxed-knuth-fc6tqf"
-REPO = "/content/beat2body"
+REPO = os.environ.get("BEAT2BODY_REPO", "/content/beat2body")
+POLL_SECONDS = 60
 # -----------------------------------------------------------------------------
+try:
+    import google.colab  # noqa: F401
+    IN_COLAB = True
+except ImportError:      # local dry run: use an existing checkout, write runs under it
+    IN_COLAB = False
 
 
 def sh(cmd, cwd=REPO, check=True):
@@ -39,13 +50,14 @@ def sh(cmd, cwd=REPO, check=True):
 
 
 # 1. code
-if not os.path.isdir(REPO):
-    sh(["git", "clone", "-q", "--depth", "1", "--branch", BRANCH, "--filter=blob:none", "--sparse",
-        REPO_URL, REPO], cwd="/content")
-    sh(["git", "sparse-checkout", "set", "--no-cone", "/*", "!/2d/raw_video/"])
-else:
-    sh(["git", "pull", "-q", "--depth", "1", "origin", BRANCH])
-sh([sys.executable, "-m", "pip", "install", "-q", "-e", ".[train]"])
+if IN_COLAB:
+    if not os.path.isdir(REPO):
+        sh(["git", "clone", "-q", "--depth", "1", "--branch", BRANCH, "--filter=blob:none", "--sparse",
+            REPO_URL, REPO], cwd="/content")
+        sh(["git", "sparse-checkout", "set", "--no-cone", "/*", "!/2d/raw_video/"])
+    else:
+        sh(["git", "pull", "-q", "--depth", "1", "origin", BRANCH])
+    sh([sys.executable, "-m", "pip", "install", "-q", "-e", ".[train]"])
 
 # 2. data
 if not os.path.exists(f"{REPO}/2d/clips/dwpose/meta.csv"):
@@ -53,31 +65,83 @@ if not os.path.exists(f"{REPO}/2d/clips/dwpose/meta.csv"):
         "--parts", "keypoints", "features", "meta"])
 
 # 3. Drive
-from google.colab import drive  # noqa: E402
+if IN_COLAB:
+    from google.colab import drive
+    drive.mount("/content/drive")
+    ROOT = "/content/drive/MyDrive/beat2body_runs"
+else:
+    ROOT = os.environ.get("BEAT2BODY_RUNS", f"{REPO}/runs/colab")
+os.makedirs(ROOT, exist_ok=True)
 
-drive.mount("/content/drive")
-RUN = f"/content/drive/MyDrive/beat2body_runs/{RUN_NAME}"
-os.makedirs(RUN, exist_ok=True)
-
-# 4. train (resumes from RUN/ckpt/last.pt if present)
 import torch  # noqa: E402
 
-amp = ["--amp"] if torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 8 else []
-print("GPU:", torch.cuda.get_device_name(0) if torch.cuda.is_available() else "none (CPU!)", "| amp:", bool(amp))
-if not os.path.exists(f"{RUN}/model.pt"):
-    sh([sys.executable, "-m", "beat2body", "train", *MODEL_ARGS, "--steps", str(STEPS),
-        "--bone-weight", str(BONE_WEIGHT), *EXTRA_ARGS, *amp, "--out", RUN, "--checkpoint-dir", f"{RUN}/ckpt"])
-else:
-    print(f"{RUN}/model.pt exists: training already finished (delete it to train again)")
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+print("GPU:", torch.cuda.get_device_name(0) if DEVICE == "cuda" else "none", "| runs:", ", ".join(RUNS))
 
-# 5. evaluate + one rendered dance
-sh([sys.executable, "-m", "beat2body", "evaluate", "--checkpoint", f"{RUN}/model.pt", "--device", "cuda"])
-# shareable videos: training progress (same clip at each check) + 20 s dances, one per genre (silent on Colab)
-sh([sys.executable, "-m", "beat2body", "report", RUN, "--device", "cuda"])
-sh([sys.executable, "-m", "beat2body", "sample", "--checkpoint", f"{RUN}/model.pt", "--video-id", DEMO_VIDEO,
-    "--seconds", "20", "--device", "cuda", "-o", f"{RUN}/generated/{DEMO_VIDEO}.npz"])
-sh([sys.executable, "-m", "beat2body", "render", "--video-id", DEMO_VIDEO,
-    "--keypoints", f"{RUN}/generated/{DEMO_VIDEO}.npz", "--labels", "real dancer", "generated",
-    "--frames", "600", "-o", f"{RUN}/{DEMO_VIDEO}.mp4"])
-print(f"\nDone. Results in Google Drive: MyDrive/beat2body_runs/{RUN_NAME}/ "
-      f"(model.pt, model_raw.pt, snapshots/, metrics.jsonl, eval_val.json, report/*.mp4, {DEMO_VIDEO}.mp4)")
+
+# 4. train all runs in parallel
+def last_metrics(run_dir):
+    """Latest training line, val loss and sample check from <run>/metrics.jsonl."""
+    out = {}
+    path = os.path.join(run_dir, "metrics.jsonl")
+    if os.path.exists(path):
+        with open(path) as f:
+            for line in f:
+                try:
+                    m = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if "loss" in m:
+                    out["train"] = m
+                if "val_loss" in m:
+                    out["val"] = m
+                if "sample" in m:
+                    out["sample"] = m
+    return out
+
+
+procs = {}
+for name, args in RUNS.items():
+    run_dir = os.path.join(ROOT, name)
+    os.makedirs(run_dir, exist_ok=True)
+    if os.path.exists(os.path.join(run_dir, "model.pt")):
+        print(f"[{name}] already finished")
+        continue
+    log = open(os.path.join(run_dir, "train.log"), "a")
+    cmd = [sys.executable, "-m", "beat2body", "train", *args, "--out", run_dir,
+           "--checkpoint-dir", os.path.join(run_dir, "ckpt")]
+    if DEVICE != "cuda":
+        cmd = [c for c in cmd if c != "--amp"]
+    procs[name] = subprocess.Popen(cmd, cwd=REPO, stdout=log, stderr=subprocess.STDOUT)
+    print(f"[{name}] started: {' '.join(cmd[3:])}")
+
+while procs:
+    time.sleep(POLL_SECONDS)
+    print(f"\n{time.strftime('%H:%M:%S')}  {'run':16s} {'step':>13s} {'loss':>7s} {'steps/s':>8s} "
+          f"{'val_loss':>9s} {'speed':>6s} {'contact':>8s} {'bone_cv':>8s} {'(real)':>7s}")
+    for name in list(procs):
+        m = last_metrics(os.path.join(ROOT, name))
+        t, v, s = m.get("train", {}), m.get("val", {}), m.get("sample", {}).get("sample", {})
+        steps = next((RUNS[name][i + 1] for i, a in enumerate(RUNS[name]) if a == "--steps"), "?")
+        fmt = lambda d, k, f: format(d[k], f) if k in d else "-"  # noqa: E731
+        print(f"{'':10s}{name:16s} {str(t.get('step', 0)) + '/' + str(steps):>13s} {fmt(t, 'loss', '7.3f')} "
+              f"{fmt(t, 'steps_per_s', '8.2f')} {fmt(v, 'val_loss', '9.3f')} {fmt(s, 'speed_ratio', '6.2f')} "
+              f"{fmt(s, 'contact_rate', '8.2f')} {fmt(s, 'bone_cv', '8.3f')} {fmt(s, 'bone_cv_real', '7.3f')}")
+        code = procs[name].poll()
+        if code is not None:
+            print(f"[{name}] {'finished' if code == 0 else f'FAILED (exit {code})'}")
+            if code != 0:
+                with open(os.path.join(ROOT, name, "train.log")) as f:
+                    print("".join(f.readlines()[-20:]))
+            del procs[name]
+
+# 5. evaluate + shareable videos for every finished run
+for name in RUNS:
+    run_dir = os.path.join(ROOT, name)
+    if not os.path.exists(os.path.join(run_dir, "model.pt")):
+        continue
+    if not os.path.exists(os.path.join(run_dir, "eval_val.json")):
+        sh([sys.executable, "-m", "beat2body", "evaluate", "--checkpoint", f"{run_dir}/model.pt", "--device", DEVICE])
+    if not os.path.isdir(os.path.join(run_dir, "report")):
+        sh([sys.executable, "-m", "beat2body", "report", run_dir, "--device", DEVICE])
+print(f"\nDone. Results in {ROOT}/<run>/: model.pt, metrics.jsonl, train.log, eval_val.json, report/*.mp4")

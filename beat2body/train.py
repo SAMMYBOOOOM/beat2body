@@ -110,7 +110,9 @@ def add_args(p):
                    if os.environ.get("SM_MODEL_DIR") else None)
     g.add_argument("--download", action="store_true", help="download the dataset from Hugging Face if missing")
     g.add_argument("--device", default="auto")
-    g.add_argument("--amp", action="store_true", help="bfloat16 mixed precision on CUDA (~1.5-2x faster)")
+    g.add_argument("--amp", action="store_true",
+                   help="mixed precision on CUDA: bfloat16 where supported (A100, L4, ...), else float16 with "
+                        "loss scaling (T4)")
     g.add_argument("--seed", type=int, default=0)
     g.add_argument("--tiny", action="store_true", help="small model, frequent logging: smoke test")
     g.add_argument("--max-train-clips", type=int, default=None,
@@ -244,17 +246,23 @@ def run(args):
             with open(os.path.join(d, "metrics.jsonl"), "a") as f:
                 f.write(json.dumps(rec) + "\n")
 
+    amp_dtype = None
+    if args.amp and dev == "cuda":
+        amp_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+    # float16 needs loss scaling against underflow; bfloat16 does not
+    scaler = torch.amp.GradScaler("cuda", enabled=amp_dtype == torch.float16)
+
     gpu = {"gpu": torch.cuda.get_device_name(0)} if dev == "cuda" else {}
     log({"event": "start", **{k: v for k, v in vars(args).items() if isinstance(v, (int, float, str, bool))},
-         **gpu, "device": dev, "params": sum(p_.numel() for p_ in model.parameters()),
+         **gpu, "device": dev, "amp_dtype": str(amp_dtype).replace("torch.", "") if amp_dtype else None,
+         "params": sum(p_.numel() for p_ in model.parameters()),
          "train_clips": len(train), "val_clips": len(val)})
     loader = torch.utils.data.DataLoader(train, batch_size=args.batch_size, shuffle=True, drop_last=True)
     val_loader = torch.utils.data.DataLoader(val, batch_size=args.batch_size, shuffle=False)
 
-    amp = torch.autocast("cuda", dtype=torch.bfloat16) if args.amp and dev == "cuda" else contextlib.nullcontext()
-
     def loss_on(net, b):
-        with amp:
+        ctx = torch.autocast("cuda", dtype=amp_dtype) if amp_dtype else contextlib.nullcontext()
+        with ctx:
             return _loss_on(net, b)
 
     def _loss_on(net, b):
@@ -311,10 +319,12 @@ def run(args):
             b = next(it)
         loss, parts = loss_on(model, b)
         opt.zero_grad(set_to_none=True)
-        loss.backward()
+        scaler.scale(loss).backward()
         if args.grad_clip > 0:
+            scaler.unscale_(opt)
             torch.nn.utils.clip_grad_norm_(params, args.grad_clip)
-        opt.step()
+        scaler.step(opt)              # skips the step if float16 gradients overflowed
+        scaler.update()
         sched.step()
         if ema is not None:
             # EMA warm-up: early on the average follows the model, so short runs and early
