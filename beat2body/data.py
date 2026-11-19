@@ -35,6 +35,7 @@ CONTACT_THRESHOLD torso lengths per frame (~1.5 px at 1080p, ~40% of frames).
     python -m beat2body data --tool dwpose --download      # check: shapes, NaNs, stats, speed
 """
 import csv
+import glob
 import hashlib
 import json
 import os
@@ -57,7 +58,7 @@ MOTION_DIM = 2 + 2 + 2 * N_JOINTS              # 38
 CONTACT, ROOT, JOINTS = slice(0, 2), slice(2, 4), slice(4, MOTION_DIM)
 FEATURE_SETS = {"edge": (["audio_edge"], 35), "mel": (["audio_mel", "audio_onset"], 65)}
 PHASE_DIM = 2
-SCALE_NORMS = ("video", "dataset")
+SCALE_NORMS = ("dancer", "video", "dataset")
 
 
 def audio_dim(feature_set):
@@ -99,14 +100,34 @@ def torso_length(kp, valid):
     return float(np.median(t[ok])) if ok.any() else 1.0
 
 
+_DANCER_TORSO = {}
+
+
+def dancer_torso(tool, video_id):
+    """Median torso length of this dancer over all of their videos (per-video medians), or None for non-AIST
+    names. Robust to videos that are mostly floor work, where a single video's torso is foreshortened."""
+    d = aist.dancer_id(video_id)
+    if d is None:
+        return None
+    if (tool, d) not in _DANCER_TORSO:
+        meds = []
+        for f in glob.glob(os.path.join(paths.keypoints_dir(), tool, "*", f"*_{d}_*.npz")):
+            z = np.load(f)
+            meds.append(torso_length(z["keypoints"], z["valid"]))
+        _DANCER_TORSO[(tool, d)] = float(np.median(meds)) if meds else None
+    return _DANCER_TORSO[(tool, d)]
+
+
 def video_motion(tool, category, video_id, scale_norm="video"):
-    """(T, 38) motion, (T, 17) valid, (T,) root_valid for one video."""
+    """(T, 38) motion, (T, 17) valid, (T,) root_valid for one video. scale_norm: dancer = this dancer's
+    median torso over all their videos = 1; video = this video's median torso = 1 (wrong for floor work);
+    dataset = one scale for all."""
     d = np.load(paths.clean_keypoint_path(tool, category, video_id))
     kp, valid, scale = d["keypoints"].astype(np.float32), d["valid"], float(d["scale"])
     centre = np.array([float(d["width"]) / 2, float(d["height"]) / 2], np.float32)
     root = (d["pelvis"].astype(np.float32) - centre) / scale
-    if scale_norm == "video":                    # this dancer's torso = 1
-        t = torso_length(kp, valid)
+    if scale_norm in ("video", "dancer"):
+        t = (dancer_torso(tool, video_id) if scale_norm == "dancer" else None) or torso_length(kp, valid)
         kp, root = kp / t, root / t
     ankles = kp[:, ANKLES] + root[:, None]
     speed = np.linalg.norm(np.diff(ankles, axis=0), axis=-1)

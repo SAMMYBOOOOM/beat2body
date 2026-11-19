@@ -82,8 +82,9 @@ def add_args(p):
     p.add_argument("--model", choices=["diffusion", "gru"], default="diffusion")
     p.add_argument("--tool", default="dwpose", choices=TOOLS)
     p.add_argument("--feature-set", default="edge", choices=list(FEATURE_SETS))
-    p.add_argument("--scale-norm", default="video", choices=list(SCALE_NORMS),
-                   help="video: every dancer the same body size (default); dataset: one scale for all videos")
+    p.add_argument("--scale-norm", default="dancer", choices=list(SCALE_NORMS),
+                   help="dancer (default): every dancer the same body size, measured over all their videos; "
+                        "video: per video (inflates floor-work videos); dataset: one scale for all (EDGE-like)")
     p.add_argument("--seq-len", type=int, default=150, help="frames per window (EDGE: 5 s at 30 fps)")
     p.add_argument("--batch-size", type=int, default=64)
     p.add_argument("--steps", type=int, default=66000, help="EDGE: 2000 epochs = ~66k steps here")
@@ -133,8 +134,9 @@ def add_args(p):
     g.add_argument("--jitter-rotate", type=float, default=None, help="degrees")
     g.add_argument("--jitter-shift", type=float, default=None, help="root shift, torso lengths")
     g = p.add_argument_group("run")
-    g.add_argument("--select", choices=["fid_k", "last"], default=None,
-                   help="model.pt = the snapshot with the best val FID_k (on 128 windows) or the last one")
+    g.add_argument("--select", choices=["val_loss", "fid_k", "last"], default=None,
+                   help="model.pt = the checkpoint with the lowest validation loss (checked every --val-every), "
+                        "the best val FID_k (on 128 windows, every --sample-every) or the last one")
     g.add_argument("--log-every", type=int, default=100)
     g.add_argument("--val-every", type=int, default=2000)
     g.add_argument("--sample-every", type=int, default=10000)
@@ -374,7 +376,12 @@ def run(args):
     sel_real = torch.stack([val[i]["motion"] for i in sel_idx])
     real_k = kinetic_features(absolute_joints(sel_real).numpy())
     k_mu, k_sd = real_k.mean(0), real_k.std(0) + 1e-8
-    best = {"fid_k": float("inf"), "step": None}
+    best = {"fid_k": float("inf"), "val_loss": float("inf"), "step": None}
+
+    def save_best():
+        for d in {args.out, live}:
+            save_bundle(os.path.join(d, "model_best.pt"), ema if ema is not None else model, cfg, lo, hi, stats,
+                        categories)
 
     def val_fid_k():
         net = ema if ema is not None else model
@@ -422,16 +429,19 @@ def run(args):
                  "steps_per_s": args.log_every / (time.time() - t0), **mem})
             t0 = time.time()
         if step % args.val_every == 0 or step == args.steps:
-            log({"val_loss": validate()})
+            vl = validate()
+            log({"val_loss": vl})
+            if args.select == "val_loss" and vl < best["val_loss"]:
+                best.update(val_loss=vl, step=step)
+                save_best()
+                log({"select": {"val_loss": vl, "best_step": step}})
         if step % args.sample_every == 0 or step == args.steps:
             log({"sample": sample_val()})
             if args.select == "fid_k":
                 fid = val_fid_k()
                 if fid < best["fid_k"]:
                     best.update(fid_k=fid, step=step)
-                    for d in {args.out, live}:
-                        save_bundle(os.path.join(d, "model_best.pt"), ema if ema is not None else model,
-                                    cfg, lo, hi, stats, categories)
+                    save_best()
                 log({"select": {"val_fid_k": fid, "best_fid_k": best["fid_k"], "best_step": best["step"]}})
         if snapshot_every and (step % snapshot_every == 0 or step == args.steps):
             os.makedirs(os.path.join(live, "snapshots"), exist_ok=True)
@@ -448,13 +458,14 @@ def run(args):
     if ema is not None:          # the plain (non-averaged) weights too, to compare
         save_bundle(os.path.join(args.out, "model_raw.pt"), model, cfg, lo, hi, stats, categories)
     best_path = os.path.join(args.out, "model_best.pt")
-    if args.select == "fid_k" and os.path.exists(best_path):
+    if args.select in ("fid_k", "val_loss") and os.path.exists(best_path):
         import shutil
         shutil.copy(best_path, os.path.join(args.out, "model.pt"))
     else:
         save_bundle(os.path.join(args.out, "model.pt"), final, cfg, lo, hi, stats, categories)
     log({"event": "done", "model": os.path.join(args.out, "model.pt"), "selected": args.select,
-         "best_step": best["step"], "best_val_fid_k": best["fid_k"] if best["step"] else None})
+         "best_step": best["step"], "best_val_fid_k": best["fid_k"] if best["fid_k"] < float("inf") else None,
+         "best_val_loss": best["val_loss"] if best["val_loss"] < float("inf") else None})
 
 
 # ---------------------------------------------------------------------------
