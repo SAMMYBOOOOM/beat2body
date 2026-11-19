@@ -21,12 +21,14 @@ import time
 # ----------------------------------------------------------------------------- settings
 SMALL = ["--d-model", "256", "--ff", "512", "--layers", "4", "--heads", "4"]   # 7.1M parameters
 COMMON = ["--steps", "20000", "--val-every", "2000", "--sample-every", "2000", "--amp"]
-# one entry per run, trained in parallel; [] instead of SMALL = full EDGE size (46.9M)
+# one entry per run, trained in parallel; [] instead of SMALL = full EDGE size (46.9M).
+# --recipe regularized (the default): dropout 0.2, weight decay 0.1, cosine LR, 3 pose tools, time-stretch +
+# jitter augmentation, Min-SNR, model.pt = best val FID_k. --recipe edge: EDGE's original settings.
 RUNS = {
-    "small_bone0": SMALL + COMMON + ["--bone-weight", "0"],     # per-video scale only (ablation)
-    "small_bone3": SMALL + COMMON + ["--bone-weight", "3"],     # stronger bone-length loss
+    "reg_small": SMALL + COMMON,                                                   # new recipe
+    "reg_small_vel1": SMALL + COMMON + ["--loss-weights", "0.636", "1.0", "0.646", "10.942"],  # weaker velocity loss
+    "edge_small": SMALL + COMMON + ["--recipe", "edge"],                           # control: EDGE settings
 }
-# (bone weight 1.0 runs on AWS and 0.3 in small_bone03; add more entries to run more at once)
 REPO_URL = "https://github.com/novaz03/beat2body"
 BRANCH = "claude/relaxed-knuth-fc6tqf"
 REPO = os.environ.get("BEAT2BODY_REPO", "/content/beat2body")
@@ -59,10 +61,13 @@ if IN_COLAB:
         sh(["git", "pull", "-q", "--depth", "1", "origin", BRANCH])
     sh([sys.executable, "-m", "pip", "install", "-q", "-e", ".[train]"])
 
-# 2. data
+# 2. data (+ the other pose tools' keypoints, used as extra training views by the regularized recipe)
 if not os.path.exists(f"{REPO}/2d/clips/dwpose/meta.csv"):
     sh([sys.executable, "-m", "beat2body", "hf", "download", "--tool", "dwpose",
         "--parts", "keypoints", "features", "meta"])
+for tool in ("openpose", "mediapipe"):
+    if not os.path.isdir(f"{REPO}/2d/keypoints/{tool}"):
+        sh([sys.executable, "-m", "beat2body", "hf", "download", "--tool", tool, "--parts", "keypoints"])
 
 # 3. Drive
 if IN_COLAB:

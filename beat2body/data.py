@@ -190,11 +190,32 @@ def flip_motion(motion, valid, root_valid):
     return m, valid[:, FLIP_PERM].copy(), root_valid
 
 
+def jitter_motion(motion, scale, angle, shift):
+    """Scale and rotate the whole figure about the image centre, then shift the root (torso lengths)."""
+    m = motion.copy()
+    c, s_ = np.cos(angle), np.sin(angle)
+    rot = np.array([[c, -s_], [s_, c]], np.float32) * scale
+    m[:, ROOT] = m[:, ROOT] @ rot.T + np.asarray(shift, np.float32)
+    j = m[:, JOINTS].reshape(len(m), N_JOINTS, 2) @ rot.T
+    m[:, JOINTS] = j.reshape(len(m), -1)
+    return m
+
+
 class DanceClips(Dataset):
-    """Windows of one split of one pose tool (see the module docstring for the item format)."""
+    """Windows of one split (see the module docstring for the item format).
+
+    Training augmentation (train split only; val / test items are deterministic, main tool only):
+      extra_tools  the same videos' keypoints from other pose tools; each item picks one tool at random
+                   (the tools track the same dancer slightly differently: a cheap source of variety)
+      stretch      time-stretch motion and music together by a factor in [1 - s, 1 + s]; beats follow
+      scale, rotate, shift   random global scale (+/- scale), in-plane rotation (+/- rotate degrees) and
+                   root shift (+/- shift torso lengths) of the whole figure
+      flip_prob    left / right mirror
+    """
 
     def __init__(self, tool="dwpose", split="train", seq_len=150, feature_set="edge", augment=None,
-                 flip_prob=0.5, stats=None, scale_norm="video"):
+                 flip_prob=0.5, stats=None, scale_norm="video", extra_tools=(), stretch=0.0,
+                 scale=0.0, rotate=0.0, shift=0.0):
         if tool not in TOOLS or split not in SPLITS or feature_set not in FEATURE_SETS:
             raise ValueError(f"tool in {TOOLS}, split in {SPLITS}, feature_set in {list(FEATURE_SETS)}")
         self.tool, self.split, self.feature_set = tool, split, feature_set
@@ -202,62 +223,103 @@ class DanceClips(Dataset):
         if not self.rows:
             raise ValueError(f"no {split} clips in {paths.meta_csv_path(tool)}")
         self.augment = (split == "train") if augment is None else augment
-        self.flip_prob = flip_prob
+        self.flip_prob, self.stretch, self.scale, self.rotate, self.shift = flip_prob, stretch, scale, rotate, shift
         self.stats = stats or audio_stats(tool, feature_set)
         self.cats = aist.load_categories()
         shortest = min(int(r["end_frame"]) - int(r["start_frame"]) for r in self.rows)
         self.seq_len = seq_len or shortest
         if self.seq_len > shortest:
             raise ValueError(f"seq_len {self.seq_len} is longer than the shortest clip ({shortest} frames)")
-        self.videos = {}
+        tools = [tool] + ([t for t in extra_tools if t != tool] if self.augment else [])
+        self.videos, self.music, self.tools_of = {}, {}, {}
         for r in self.rows:
             v = r["video_id"]
-            if v in self.videos:
+            if v in self.music:
                 continue
-            motion, valid, root_valid = video_motion(tool, r["category"], v, scale_norm)
-            beats = np.load(paths.feature_path("beats", v))
+            beats = np.load(paths.feature_path("beats", v)).astype(np.float64)
             audio = music_input(v, feature_set, self.stats, beats)
-            T = min(len(motion), len(audio))
-            mask = np.zeros(T, np.float32)
-            bi = np.round(beats).astype(int)
-            mask[bi[(bi >= 0) & (bi < T)]] = 1
-            self.videos[v] = {"motion": motion[:T], "valid": valid[:T], "root_valid": root_valid[:T],
-                              "audio": audio[:T], "beats": mask, "category": self.cats[r["category"]]}
+            avail = []
+            for t in tools:
+                if not os.path.exists(paths.clean_keypoint_path(t, r["category"], v)):
+                    continue
+                motion, valid, root_valid = video_motion(t, r["category"], v, scale_norm)
+                self.videos[(t, v)] = {"motion": motion, "valid": valid, "root_valid": root_valid}
+                avail.append(t)
+            T = min([len(audio)] + [len(self.videos[(t, v)]["motion"]) for t in avail])
+            for t in avail:
+                d = self.videos[(t, v)]
+                for k in d:
+                    d[k] = d[k][:T]
+            self.music[v] = {"audio": audio[:T], "beats": beats, "category": self.cats[r["category"]], "T": T}
+            self.tools_of[v] = avail
 
     def __len__(self):
         return len(self.rows)
 
-    def window(self, i):
-        r = self.rows[i]
-        s = int(r["start_frame"])
-        e = min(int(r["end_frame"]), len(self.videos[r["video_id"]]["motion"]))
-        L = self.seq_len
+    def _rand(self, lo, hi):
         # torch RNG: DataLoader seeds it differently in every worker (numpy's global RNG is not)
-        off = int(torch.randint(0, e - s - L + 1, ())) if self.augment and e - s > L else 0
-        return r["video_id"], s + off, s + off + L
+        return lo + (hi - lo) * float(torch.rand(()))
+
+    def window(self, i):
+        """(video_id, tool, start, source length) of item i; the source is resampled to seq_len frames."""
+        r = self.rows[i]
+        vid, L = r["video_id"], self.seq_len
+        s, e = int(r["start_frame"]), min(int(r["end_frame"]), self.music[vid]["T"])
+        if not self.augment:
+            return vid, self.tool, s, L
+        tool = self.tools_of[vid][int(torch.randint(0, len(self.tools_of[vid]), ()))]
+        src = L
+        if self.stretch > 0:
+            src = int(round(L * self._rand(1 - self.stretch, 1 + self.stretch)))
+            src = max(2, min(src, e - s))
+        off = int(torch.randint(0, e - s - src + 1, ())) if e - s > src else 0
+        return vid, tool, s + off, src
 
     def __getitem__(self, i):
-        vid, s, e = self.window(i)
-        v = self.videos[vid]
-        motion, valid, root_valid = v["motion"][s:e], v["valid"][s:e], v["root_valid"][s:e]
-        if self.augment and float(torch.rand(())) < self.flip_prob:
-            motion, valid, root_valid = flip_motion(motion, valid, root_valid)
+        vid, tool, s, src = self.window(i)
+        L, m, v = self.seq_len, self.music[vid], self.videos[(tool, vid)]
+        if src == L:
+            idx = np.arange(s, s + L)
+            motion, valid, root_valid = v["motion"][idx], v["valid"][idx], v["root_valid"][idx]
+            audio = m["audio"][idx]
+        else:                                   # time-stretch: resample src frames to L frames
+            t = np.linspace(s, s + src - 1, L)
+            near = np.round(t).astype(int)
+            lo_i = np.floor(t).astype(int)
+            hi_i = np.minimum(lo_i + 1, s + src - 1)
+            w = (t - lo_i)[:, None]
+            motion = (1 - w) * v["motion"][lo_i] + w * v["motion"][hi_i]
+            motion[:, CONTACT] = v["motion"][near][:, CONTACT]
+            audio = ((1 - w) * m["audio"][lo_i] + w * m["audio"][hi_i]).astype(np.float32)
+            valid, root_valid = v["valid"][near], v["root_valid"][near]
+        b = (m["beats"] - s) * (L - 1) / max(src - 1, 1)
+        beats = np.zeros(L, np.float32)
+        bi = np.round(b).astype(int)
+        beats[bi[(bi >= 0) & (bi < L)]] = 1
+        motion = motion.astype(np.float32)
+        if self.augment:
+            if float(torch.rand(())) < self.flip_prob:
+                motion, valid, root_valid = flip_motion(motion, valid, root_valid)
+            if self.scale or self.rotate or self.shift:
+                motion = jitter_motion(motion, self._rand(1 - self.scale, 1 + self.scale),
+                                       np.deg2rad(self._rand(-self.rotate, self.rotate)),
+                                       (self._rand(-self.shift, self.shift), self._rand(-self.shift, self.shift)))
         return {
             "motion": torch.from_numpy(np.ascontiguousarray(motion)),
             "valid": torch.from_numpy(np.ascontiguousarray(valid)),
             "root_valid": torch.from_numpy(np.ascontiguousarray(root_valid)),
-            "audio": torch.from_numpy(v["audio"][s:e]),
-            "beats": torch.from_numpy(v["beats"][s:e]),
-            "category": torch.tensor(v["category"], dtype=torch.long),
+            "audio": torch.from_numpy(np.ascontiguousarray(audio)),
+            "beats": torch.from_numpy(beats),
+            "category": torch.tensor(m["category"], dtype=torch.long),
             "video_id": vid,
             "start": s,
         }
 
     def motion_range(self):
-        """Per-dimension min / max over this split's frames, made symmetric in x so that flipped
-        items stay in range (EDGE normalizes with MinMax to [-1, 1]); contacts are 0 / 1."""
-        frames = np.concatenate([self.videos[r["video_id"]]["motion"][int(r["start_frame"]):int(r["end_frame"])]
-                                 for r in self.rows])
+        """Per-dimension min / max over this split's frames (all tools), made symmetric in x so that
+        flipped items stay in range (EDGE normalizes with MinMax to [-1, 1]); contacts are 0 / 1."""
+        frames = np.concatenate([self.videos[(t, r["video_id"])]["motion"][int(r["start_frame"]):int(r["end_frame"])]
+                                 for r in self.rows for t in self.tools_of[r["video_id"]]])
         lo, hi = frames.min(0), frames.max(0)
         xs = np.r_[ROOT.start, np.arange(JOINTS.start, MOTION_DIM, 2)]
         lo[xs], hi[xs] = np.minimum(lo[xs], -hi[xs]), np.maximum(hi[xs], -lo[xs])

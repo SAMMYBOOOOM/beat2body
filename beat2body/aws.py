@@ -89,7 +89,8 @@ def upload_data(args):
     session, account = _clients()
     bucket = _bucket(args, account)
     root = paths.data_root()
-    members = ["categories.json", "features", os.path.join("keypoints", args.tool),
+    members = ["categories.json", "features"] + [os.path.join("keypoints", t) for t in paths.TOOLS
+                                                   if os.path.isdir(os.path.join(root, "keypoints", t))] + [
                os.path.join("clips", args.tool, "meta.csv"), os.path.join("clips", args.tool, "split.json")]
     for m in members:
         if not os.path.exists(os.path.join(root, m)):

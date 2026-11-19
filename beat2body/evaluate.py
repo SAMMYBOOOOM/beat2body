@@ -49,6 +49,7 @@ def add_args(p):
     p.add_argument("--split", default="val", choices=["val", "test"])
     p.add_argument("--guidance", type=float, default=None, help="default: the trained value")
     p.add_argument("--steps", type=int, default=50, help="DDIM steps")
+    p.add_argument("--eta", type=float, default=1.0, help="DDIM noise: 1 = EDGE (stochastic), 0 = deterministic")
     p.add_argument("--batch-size", type=int, default=64)
     p.add_argument("--max-windows", type=int, default=None, help="evaluate on fewer windows (quick check)")
     p.add_argument("--seed", type=int, default=0)
@@ -188,7 +189,7 @@ def run(args):
     for s in range(0, len(audio), args.batch_size):
         out.append(gen.generate(audio[s:s + args.batch_size], genre[s:s + args.batch_size],
                                 first=gen.normalizer.norm(real_m[s:s + args.batch_size, 0].to(dev)),
-                                guidance=args.guidance, steps=args.steps).cpu())
+                                guidance=args.guidance, steps=args.steps, eta=args.eta).cpu())
     gen_m = torch.cat(out)
     generated = absolute_joints(gen_m).numpy()
     static = np.repeat(real.mean((0, 1), keepdims=True), len(real), 0).repeat(real.shape[1], 1)

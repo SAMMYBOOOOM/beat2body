@@ -79,7 +79,7 @@ def test_stats_from_train_only(data_root):
 
 def test_flip_and_range(data_root):
     ds = DanceClips("dwpose", "train", seq_len=48)
-    m = ds.videos["gLH_sFM_c01_d01_mLH0_ch01"]["motion"][:48]
+    m = ds.videos[("dwpose", "gLH_sFM_c01_d01_mLH0_ch01")]["motion"][:48]
     f, v, _ = flip_motion(m, np.ones((48, 17), bool), np.ones(48, bool))
     assert np.allclose(f[:, ROOT.start], -m[:, ROOT.start])
     assert np.allclose(f[:, JOINTS.start + 2 * 10], -m[:, JOINTS.start + 2 * 9])   # right wrist x = -left wrist x
@@ -92,3 +92,32 @@ def test_train_crops_and_loader(data_root):
     assert len({ds[0]["start"] for _ in range(30)}) > 1
     b = next(iter(make_loader("dwpose", "train", batch_size=2, seq_len=32)))
     assert b["motion"].shape == (2, 32, 38) and b["root_valid"].shape == (2, 32)
+
+
+def test_jitter_keeps_shape_and_rotates_root():
+    from beat2body.data import jitter_motion
+    m = np.zeros((4, 38), np.float32)
+    m[:, ROOT] = [1.0, 0.0]
+    m[:, JOINTS.start:JOINTS.start + 2] = [0.0, 1.0]
+    out = jitter_motion(m, 2.0, np.pi / 2, (0.5, 0.0))
+    assert np.allclose(out[0, ROOT], [0.5, 2.0], atol=1e-5)                 # (1,0) * 2 rotated 90 deg + shift
+    assert np.allclose(out[0, JOINTS.start:JOINTS.start + 2], [-2.0, 0.0], atol=1e-5)
+    assert np.allclose(out[:, CONTACT], m[:, CONTACT])
+
+
+def test_stretch_and_tools(data_root):
+    import shutil
+    # a second pose tool for one video: same layout, different numbers
+    vid, cat = "gLH_sFM_c01_d01_mLH0_ch01", "la_hiphop"
+    dst = paths.clean_keypoint_path("openpose", cat, vid)
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    shutil.copy(paths.clean_keypoint_path("dwpose", cat, vid), dst)
+    ds = DanceClips("dwpose", "train", seq_len=32, extra_tools=("openpose",), stretch=0.1, scale=0.05,
+                    rotate=5, shift=0.1)
+    assert ds.tools_of[vid] == ["dwpose", "openpose"] and ds.tools_of["gHO_sFM_c01_d02_mHO0_ch02"] == ["dwpose"]
+    srcs = {ds.window(0)[3] for _ in range(40)}
+    assert min(srcs) < 32 < max(srcs) and max(srcs) <= 36                 # stretched source lengths
+    x = ds[0]
+    assert x["motion"].shape == (32, 38) and x["audio"].shape == (32, 37) and torch.isfinite(x["motion"]).all()
+    val = DanceClips("dwpose", "val", seq_len=32, extra_tools=("openpose",), stretch=0.1)
+    assert val.window(0)[1:] == ("dwpose", 0, 32)                            # val stays deterministic

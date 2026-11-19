@@ -72,17 +72,20 @@ def masked_mse(a, b, mask):
     return ((a - b) ** 2 * mask).sum() / mask.sum().clamp(min=1)
 
 
-def motion_losses(pred_n, target_n, valid, root_valid, normalizer, weights=EDGE_WEIGHTS, bone_weight=0.0):
+def motion_losses(pred_n, target_n, valid, root_valid, normalizer, weights=EDGE_WEIGHTS, bone_weight=0.0,
+                  sample_weight=None):
     """EDGE's four losses on normalized predictions / targets (B, L, 38), plus the projected bone-length
     loss: each body bone's on-screen length vs the same bone in the real frame (relative error), so
-    foreshortening in the real data is kept and no constant length is assumed."""
-    m = feature_mask(valid, root_valid)
+    foreshortening in the real data is kept and no constant length is assumed. sample_weight (B,) weights
+    each sequence (Min-SNR); the foot loss is not weighted (it uses the model's own contact output)."""
+    w = torch.ones(pred_n.shape[0], device=pred_n.device) if sample_weight is None else sample_weight
+    m = feature_mask(valid, root_valid) * w[:, None, None]
     recon = masked_mse(pred_n, target_n, m)
     nc = slice(CONTACT.stop, MOTION_DIM)
     mv = m[:, 1:, nc] * m[:, :-1, nc]
     vel = masked_mse(pred_n[:, 1:, nc] - pred_n[:, :-1, nc], target_n[:, 1:, nc] - target_n[:, :-1, nc], mv)
     pa, ta = absolute_joints(normalizer.denorm(pred_n)), absolute_joints(normalizer.denorm(target_n))
-    mj = (valid & root_valid[..., None]).float()[..., None].expand_as(pa)
+    mj = (valid & root_valid[..., None]).float()[..., None].expand_as(pa) * w[:, None, None, None]
     fk = masked_mse(pa, ta, mj)
     static = pred_n[..., CONTACT] > 0.95                                    # (B, L, 2), model's own contact
     feet = pa[..., ANKLE_IDX, :]                                            # (B, L, 2, 2)
@@ -91,7 +94,7 @@ def motion_losses(pred_n, target_n, valid, root_valid, normalizer, weights=EDGE_
     foot_v = foot_v * static[..., None]
     foot = (foot_v ** 2).mean()
     lp, lt = bone_lengths(pa), bone_lengths(ta)
-    mb = (valid[..., BODY_BONES[:, 0]] & valid[..., BODY_BONES[:, 1]]).float()
+    mb = (valid[..., BODY_BONES[:, 0]] & valid[..., BODY_BONES[:, 1]]).float() * w[:, None, None]
     bone = (((lp - lt) / lt.clamp(min=0.05)) ** 2 * mb).sum() / mb.sum().clamp(min=1)
     parts = {"recon": recon.item(), "vel": vel.item(), "fk": fk.item(), "foot": foot.item(), "bone": bone.item()}
     total = weights[0] * recon + weights[1] * vel + weights[2] * fk + weights[3] * foot + bone_weight * bone
@@ -100,8 +103,9 @@ def motion_losses(pred_n, target_n, valid, root_valid, normalizer, weights=EDGE_
 
 class EDGEDiffusion:
     def __init__(self, model, normalizer, steps=1000, music_drop=0.25, genre_drop=0.25, guidance=2.0,
-                 weights=EDGE_WEIGHTS, bone_weight=0.0):
+                 weights=EDGE_WEIGHTS, bone_weight=0.0, min_snr=0.0):
         self.model, self.normalizer, self.T = model, normalizer, steps
+        self.min_snr = min_snr
         self.ac = cosine_alphas_cumprod(steps)
         self.music_drop, self.genre_drop, self.guidance, self.weights = music_drop, genre_drop, guidance, weights
         self.bone_weight = bone_weight
@@ -122,7 +126,12 @@ class EDGEDiffusion:
         g = torch.where(torch.rand(B, device=x0.device) < self.genre_drop,
                         torch.full_like(genre, self.model.n_genres), genre)
         pred = self.model(x_t, cond, t, g, keep_music).float()      # losses in float32 under autocast
-        return motion_losses(pred, x0, valid, root_valid, self.normalizer, self.weights, self.bone_weight)
+        sw = None
+        if self.min_snr > 0:    # Min-SNR-gamma (Hang et al. 2023), x0 form: weight = min(SNR, gamma)
+            ac = self.ac.to(x0.device)[t]
+            sw = torch.clamp(ac / (1 - ac), max=self.min_snr)
+            sw = sw / sw.mean().clamp(min=1e-8)
+        return motion_losses(pred, x0, valid, root_valid, self.normalizer, self.weights, self.bone_weight, sw)
 
     def predict(self, x, cond, t, genre, guidance):
         keep = torch.ones(x.shape[0], dtype=torch.bool, device=x.device)
