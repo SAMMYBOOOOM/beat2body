@@ -205,6 +205,8 @@ and audio features (log-mel, onset strength, beat positions).
 2d/features/audio_onset/<video_id>.npy          (T,) onset strength
 2d/features/beats/<video_id>.npy                beat times in frames (float): grid at the published AIST tempo,
                                                 phase fitted to the onset envelope
+2d/features/audio_edge/<video_id>.npy           (T,35) EDGE's "baseline" music features at 30 fps: onset envelope (1),
+                                                MFCC (20), chroma CENS (12), onset peaks one-hot (1), beats one-hot (1)
 2d/clips/{tool}/meta.csv                        one row per clip: clip_path, audio_feat_path, category,
                                                 start_frame, end_frame, split, video_id, dancer, music
 2d/clips/{tool}/split.json                      split options and songs per split
@@ -216,6 +218,22 @@ and audio features (log-mel, onset strength, beat positions).
 Keypoints are in COCO-17 order, centred on the mid-hip and divided by the median torso length
 over the whole dataset. Undo with `xy_px = keypoints * scale + pelvis[:, None]`. `valid` is
 False where a joint was interpolated rather than observed; use it as a loss mask.
+
+## How the training code uses it
+
+The beat2body model is a 2D re-implementation of EDGE (Tseng et al., CVPR 2023). It does not read
+the clip files; it reads the per-video files above and uses `meta.csv` only for the windows and the
+split. Per frame it builds:
+
+- **motion (38):** 2 ankle contacts + 2 root + 34 joints. Root = `(pelvis - image centre) / scale`
+  (the dancer's position in the 1920x1080 frame, in torso lengths). Joints = `keypoints` (pelvis-centred).
+  An ankle is in contact when its image speed, root motion included, is below 0.012 torso lengths
+  per frame (about 1.5 px; about 40% of frames).
+- **music (37):** `audio_edge` (35), normalized with train-split mean / std, + sin / cos of the
+  position within the beat from `beats` (2).
+- **windows:** 150 frames (5 s) cropped from the clips of each split.
+
+Code: `beat2body.data` in the project repository; `python -m beat2body data` checks it.
 
 Video ids follow AIST naming: `gLH_sFM_c01_d16_mLH0_ch01` = genre `LH`, dancer `d16`, song `mLH0`.
 

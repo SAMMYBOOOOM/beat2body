@@ -31,6 +31,10 @@ IMAGE = ("763104351884.dkr.ecr.us-east-1.amazonaws.com/pytorch-training@"
          "sha256:86fbaa7cef705829a5cb92de9abca974817ca8b274b3b3d978cc2778b458ee67")
 JOB_PREFIX = "beat2body"
 os.environ.setdefault("AWS_SDK_UA_APP_ID", "AWSSkill-SageMaker")
+# The SDK's client-side role check requires a generic permission list, including EC2 network
+# permissions that only VPC jobs need. The role is deliberately least-privilege (no VPC), and
+# SageMaker validates the role itself when the job starts, so the client-side check is skipped.
+os.environ.setdefault("SAGEMAKER_VALIDATE_ROLE", "false")
 
 
 def add_args(p):
