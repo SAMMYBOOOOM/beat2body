@@ -127,13 +127,19 @@ mlruns/
 2d/features/**/*.npz
 2d/features/**/*.pkl
 
-# Sliding-window clips — regenerable
+# Sliding-window clips and their per-tool manifests — regenerable, published on Hugging Face
 2d/clips/**/*.npz
 2d/clips/**/*.npy
+2d/clips/*/meta.csv
+2d/clips/*/split.json
+2d/clips/*/audio_stats*.json
 
-# Metadata — decide per project: usually keep the *schema*,
-# ignore per-run manifests. Uncomment to ignore:
-# 2d/meta.csv
+# Dataset cards (python -m beat2body hf card) and rendered videos
+2d/hf_cards/
+renders/
+
+# 2d/categories.json IS tracked: it fixes the genre -> embedding index mapping,
+# so a run on a subset of genres that rewrites it shows up in `git status`.
 
 # ---------- Keep the folder skeleton ----------
 # Empty dirs aren't tracked; these files force the structure.
