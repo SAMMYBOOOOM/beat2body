@@ -248,4 +248,19 @@ def download(args):
     os.makedirs(out, exist_ok=True)
     with tarfile.open(fileobj=io.BytesIO(body)) as t:
         t.extractall(out, filter="data")
+    raw = os.path.join(out, "model_raw.pt")
+    ck = d.get("CheckpointConfig", {}).get("S3Uri")
+    if ck and not os.path.exists(raw) and os.path.exists(os.path.join(out, "model.pt")):
+        # older jobs saved only the EMA weights: rebuild the plain weights from the resume checkpoint
+        import torch
+        cb, ckey = ck[5:].split("/", 1)
+        try:
+            data = session.client("s3").get_object(Bucket=cb, Key=ckey.rstrip("/") + "/last.pt")["Body"].read()
+            last = torch.load(io.BytesIO(data), map_location="cpu", weights_only=False)
+            bundle = torch.load(os.path.join(out, "model.pt"), map_location="cpu", weights_only=False)
+            bundle["model"] = last["model"]
+            torch.save(bundle, raw)
+            print(f"[aws] wrote {raw} (plain weights from the checkpoint at step {last['step']})")
+        except Exception as e:  # noqa: BLE001
+            print(f"[aws] no plain weights: {type(e).__name__}: {str(e)[:120]}")
     print(f"[aws] {uri} -> {out}: {sorted(os.listdir(out))}")
