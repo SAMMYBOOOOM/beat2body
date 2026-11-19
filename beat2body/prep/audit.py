@@ -75,6 +75,7 @@ def run(args):
 
     # video-level files
     fast = Counter()
+    torso_med = {}                       # video -> median torso length (dataset-normalized)
     for v, c in sorted(vid_cat.items()):
         d = np.load(paths.clean_keypoint_path(tool, c, v))
         kp, valid = d["keypoints"], d["valid"]
@@ -95,8 +96,7 @@ def run(args):
             if np.abs(mid_hip[hips]).max() > 1e-3:
                 issues["norm"].append(f"{v}: mid-hip not at the origin")
             torso = np.linalg.norm((kp[:, L_SHOULDER] + kp[:, R_SHOULDER]) / 2 - mid_hip, axis=1)[hips]
-            if not 0.6 < np.median(torso) < 1.5:
-                issues["norm"].append(f"{v}: median torso {np.median(torso):.2f}")
+            torso_med[v] = float(np.median(torso))
         fast[v[:3]] += int((np.linalg.norm(np.diff(kp, axis=0), axis=-1) > 0.6).sum())
         # beats vs published tempo
         b = np.load(paths.feature_path("beats", v)).astype(np.float64)
@@ -124,6 +124,17 @@ def run(args):
     if same != len(meta):
         issues["clip"].append(f"{len(meta) - same} clips differ from their source")
 
+    # body size: each dancer's median torso must be ~1 (the dataset scale); single videos may be far lower
+    # (floor work, e.g. break basics, where the torso points at the camera), which is reported, not failed
+    by_dancer = defaultdict(list)
+    for v, t in torso_med.items():
+        by_dancer[aist.dancer_id(v) or v].append(t)
+    for d, ts in sorted(by_dancer.items()):
+        if not 0.6 < np.median(ts) < 1.5:
+            issues["norm"].append(f"dancer {d}: median torso {np.median(ts):.2f}")
+    low = sorted(v for v, t in torso_med.items()
+                 if t < 0.6 * np.median(by_dancer[aist.dancer_id(v) or v]))
+
     print(f"[audit] videos per split: {dict(Counter(vid_split.values()))}; test songs: {sorted(songs['test'])}")
     for k in CHECKS:
         n = len(issues[k])
@@ -131,6 +142,9 @@ def run(args):
     print(f"  clips identical to their source: {same}/{len(meta)}")
     print(f"  info: joint moves > 0.6 torso lengths per frame (fast real moves; inspect with render): "
           f"{dict(fast.most_common(3))} ...")
+    if low:
+        print(f"  info: {len(low)} videos with a much shorter torso than their dancer's (floor work / foreshortening; "
+              f"use --scale-norm dancer, not video): {low[:3]} ...")
     if any(issues[k] for k in CHECKS):
         sys.exit("[audit] FAILED")
     print("[audit] passed")

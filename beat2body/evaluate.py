@@ -57,6 +57,9 @@ def add_args(p):
     p.add_argument("--max-windows", type=int, default=None, help="evaluate on fewer windows (quick check)")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--long-seconds", type=float, default=20.0, help="long-dance drift check length; 0 = skip")
+    p.add_argument("--subset", choices=["all", "advanced", "basic"], default="all",
+                   help="only the advanced (sFM) or basic (sBM) dances of the split, e.g. to compare with models "
+                        "evaluated before the basic dances were added (advanced)")
     p.add_argument("--tag", default="", help="suffix for the result file: eval_<split>_<tag>.json (sweeps)")
     p.add_argument("--device", default="auto")
 
@@ -134,13 +137,18 @@ def size_variation(j):
 
 
 def long_drift(gen, bundle, split, seconds, seed):
-    """Generated vs real whole-piece size variation, one video per genre."""
+    """Generated vs real whole-piece size variation, one video per genre (the first one at least `seconds` long)."""
     from beat2body.data import load_meta, video_motion
     from beat2body.train import generate_long
     cfg = bundle["config"]
+    rows = load_meta(cfg["tool"], split)
+    length = {}
+    for r in rows:
+        length[r["video_id"]] = max(length.get(r["video_id"], 0), int(r["end_frame"]))
     vids = {}
-    for r in load_meta(cfg["tool"], split):
-        vids.setdefault(r["category"], r["video_id"])
+    for r in rows:
+        if length[r["video_id"]] >= seconds * 30:
+            vids.setdefault(r["category"], r["video_id"])
     gen_v, real_v = [], []
     for cat, vid in sorted(vids.items()):
         motion, _, _ = generate_long(gen, bundle, vid, seconds, seed=seed)
@@ -176,6 +184,9 @@ def score(name, j, real_j, beats, z_k, z_p, contact=None):
     return row
 
 
+SUBSETS = {"all": None, "advanced": "sFM", "basic": "sBM"}
+
+
 def windows(ds, n=None):
     """Deterministic windows of a split: absolute joints, music, genre, beat frames, contacts."""
     items = [ds[i] for i in range(len(ds) if n is None else min(n, len(ds)))]
@@ -192,8 +203,13 @@ def run(args):
     cfg = bundle["config"]
     kw = dict(seq_len=cfg["seq_len"], feature_set=cfg["feature_set"], stats=bundle["audio_stats"], augment=False,
               scale_norm=cfg.get("scale_norm", "dataset"))
-    real_m, audio, genre, beats = windows(DanceClips(cfg["tool"], args.split, **kw), args.max_windows)
-    train_m, _, _, train_beats = windows(DanceClips(cfg["tool"], "train", **kw), len(real_m))
+    def subset(ds):
+        tag = SUBSETS[args.subset]
+        if tag:
+            ds.rows = [r for r in ds.rows if f"_{tag}_" in r["video_id"]]
+        return ds
+    real_m, audio, genre, beats = windows(subset(DanceClips(cfg["tool"], args.split, **kw)), args.max_windows)
+    train_m, _, _, train_beats = windows(subset(DanceClips(cfg["tool"], "train", **kw)), len(real_m))
     real = absolute_joints(real_m).numpy()
     z_k = (kinetic_features(real).mean(0), kinetic_features(real).std(0) + 1e-8)
     z_p = (pose_features(real).mean(0), pose_features(real).std(0) + 1e-8)
@@ -218,7 +234,8 @@ def run(args):
         score("Real dance + other music", real, real, shuffled, z_k, z_p),
         score("Frozen mean pose", static, real, beats, z_k, z_p),
     ]
-    print(f"\n{args.split}: {len(real)} windows of {cfg['seq_len']} frames; checkpoint {args.checkpoint}")
+    print(f"\n{args.split} ({args.subset}): {len(real)} windows of {cfg['seq_len']} frames; "
+          f"checkpoint {args.checkpoint}")
     cols = ["FID_k", "FID_p", "Div_k", "Div_p", "BAS", "PFC", "speed", "BeatPow", "BoneCV"]
     print(f"{'':34s}" + "".join(f"{c:>9s}" for c in cols))
     for r in rows:
@@ -237,6 +254,6 @@ def run(args):
     name = f"eval_{args.split}" + (f"_{args.tag}" if args.tag else "") + ".json"
     path = os.path.join(os.path.dirname(os.path.abspath(args.checkpoint)), name)
     with open(path, "w") as f:
-        json.dump({"split": args.split, "windows": len(real), "guidance": args.guidance, "rows": rows,
-                   "long_drift": drift}, f, indent=1)
+        json.dump({"split": args.split, "subset": args.subset, "windows": len(real), "guidance": args.guidance,
+                   "rows": rows, "long_drift": drift}, f, indent=1)
     print(f"wrote {path}")

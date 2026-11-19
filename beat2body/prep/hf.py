@@ -150,7 +150,11 @@ def _split_text(info):
         return (f"**Test** holds out {n} song(s) per genre completely (all their videos), so test music is "
                 f"never seen in training; use it for the final evaluation. The other videos are split into "
                 f"**train / val by {unit}** ({int(round(100 * info.get('val_ratio', 0.15)))}% val), so train and "
-                "val share songs and dancers.")
+                "val share songs and dancers." + (
+                    " Basic dances (`sBM`) follow the advanced dances' split: a basic dance on a held-out test "
+                    "song is in test; the others are split into train / val **by routine** (a dancer's routine "
+                    "is danced to several songs; all its versions stay in one split)."
+                    if info.get("has_basic") else ""))
     return f"Split by {unit}, stratified per genre."
 
 
@@ -168,6 +172,14 @@ def make_card(tool, org):
     videos = {s: len({r["video_id"] for r in rows if r["split"] == s}) for s in SPLITS}
     songs = {s: len({r.get("music") for r in rows if r["split"] == s}) for s in SPLITS}
     model, tool_license, conf = TOOL_INFO[tool]
+    n_adv = len({r["video_id"] for r in rows if "_sFM_" in r["video_id"]})
+    n_basic = len({r["video_id"] for r in rows if "_sBM_" in r["video_id"]})
+    info["has_basic"] = n_basic > 0
+    source = (f"advanced dances (`sFM`: each dancer's own choreography, ~35 s), front camera (`c01`): "
+              f"{n_adv} videos")
+    if n_basic:
+        source += (f"; and basic dances (`sBM`: 10 genre-basic routines per dancer, each danced to 4 songs, "
+                   f"7-12 s), front camera: {n_basic} videos")
     window, stride = info.get("window", 240), info.get("stride", 60)
     cats = sorted({r["category"] for r in rows})
     table = "\n".join(f"| {s} | {clips.get(s, 0)} | {videos[s]} | {songs[s]} |" for s in SPLITS)
@@ -184,7 +196,7 @@ tags:
 - motion-generation
 - keypoints
 size_categories:
-- 1K<n<10K
+- {"10K<n<100K" if len(rows) >= 10000 else "1K<n<10K"}
 ---
 
 # AIST Dance 2D keypoints ({tool})
@@ -194,10 +206,9 @@ size_categories:
 generation (project: beat2body). **No video or audio is included**: only joint coordinates
 and audio features (log-mel, onset strength, beat positions).
 
-- Source videos: advanced choreography (`sFM`), front camera (`c01`), 10 genres x 21 videos
-  ({", ".join(cats)}), resampled to 30 fps.
+- Source videos: {source}. Genres: {", ".join(cats)}. Resampled to 30 fps.
 - Pose tool: {model}. Confidence threshold {conf}.
-- Companion datasets with the same videos, split and format: {others}.
+- Companion datasets with the same format and split: {others}{" (advanced dances only)" if n_basic else ""}.
 
 ## Files
 
@@ -240,7 +251,8 @@ split. Per frame it builds:
 
 Code: `beat2body.data` in the project repository; `python -m beat2body data` checks it.
 
-Video ids follow AIST naming: `gLH_sFM_c01_d16_mLH0_ch01` = genre `LH`, dancer `d16`, song `mLH0`.
+Video ids follow AIST naming: `gLH_sFM_c01_d16_mLH0_ch01` = genre `LH`, situation `sFM` (advanced; `sBM` =
+basic), camera `c01`, dancer `d16`, song `mLH0`, choreography / routine `ch01`.
 
 ## Split
 

@@ -82,8 +82,9 @@ def add_args(p):
     p.add_argument("--model", choices=["diffusion", "gru"], default="diffusion")
     p.add_argument("--tool", default="dwpose", choices=TOOLS)
     p.add_argument("--feature-set", default="edge", choices=list(FEATURE_SETS))
-    p.add_argument("--scale-norm", default="video", choices=list(SCALE_NORMS),
-                   help="video: every dancer the same body size (default); dataset: one scale for all videos")
+    p.add_argument("--scale-norm", default="dancer", choices=list(SCALE_NORMS),
+                   help="dancer (default): every dancer the same body size, measured over all their videos; "
+                        "video: per video (inflates floor-work videos); dataset: one scale for all (EDGE-like)")
     p.add_argument("--seq-len", type=int, default=150, help="frames per window (EDGE: 5 s at 30 fps)")
     p.add_argument("--batch-size", type=int, default=64)
     p.add_argument("--steps", type=int, default=66000, help="EDGE: 2000 epochs = ~66k steps here")
