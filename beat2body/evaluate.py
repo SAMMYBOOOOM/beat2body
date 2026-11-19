@@ -54,6 +54,7 @@ def add_args(p):
     p.add_argument("--max-windows", type=int, default=None, help="evaluate on fewer windows (quick check)")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--long-seconds", type=float, default=20.0, help="long-dance drift check length; 0 = skip")
+    p.add_argument("--tag", default="", help="suffix for the result file: eval_<split>_<tag>.json (sweeps)")
     p.add_argument("--device", default="auto")
 
 
@@ -219,7 +220,8 @@ def run(args):
         print(f"{'':12s}{'torso':>9s}{'thigh':>9s}{'height':>9s}")
         for name, v in (("generated", g), ("real", r)):
             print(f"{name:12s}" + "".join(f"{v[k]:9.3f}" for k in ("torso", "thigh", "height")))
-    path = os.path.join(os.path.dirname(os.path.abspath(args.checkpoint)), f"eval_{args.split}.json")
+    name = f"eval_{args.split}" + (f"_{args.tag}" if args.tag else "") + ".json"
+    path = os.path.join(os.path.dirname(os.path.abspath(args.checkpoint)), name)
     with open(path, "w") as f:
         json.dump({"split": args.split, "windows": len(real), "guidance": args.guidance, "rows": rows,
                    "long_drift": drift}, f, indent=1)
