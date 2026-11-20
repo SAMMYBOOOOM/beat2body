@@ -138,6 +138,12 @@ mlruns/
 2d/hf_cards/
 renders/
 
+# Model-generated videos and keypoints: published on Hugging Face (SizheZ03/beat2body-runs) at the same paths
+reports/**/*.mp4
+reports/**/*.npz
+results/**/*.mp4
+results/**/*.npz
+
 # 2d/categories.json IS tracked: it fixes the genre -> embedding index mapping,
 # so a run on a subset of genres that rewrites it shows up in `git status`.
 

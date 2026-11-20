@@ -137,8 +137,9 @@ Training checks (8 val clips; indicative only). Check live with
 Job names are `beat2body-diffusion-<prefix>-<id>-<date>`; results go to
 `s3://beat2body-670682107687-us-east-1/output/<job>/`, snapshots to `.../checkpoints/<prefix>/`.
 
-**Videos:** `reports/2026-11-19_progress/` (model A, first model; committed) and
-`reports/2026-11-19_run21/compare_*.mp4` (real | model A | run 2.1, 20 s with music; not committed).
+**Videos and checkpoints** are on Hugging Face, [SizheZ03/beat2body-runs](https://huggingface.co/SizheZ03/beat2body-runs)
+(private): `runs/<job>/` for every training run, and every generated `.mp4` / `.npz` at its `reports/...` path
+(git ignores them). Get one with `hf download SizheZ03/beat2body-runs --include "<path>" --local-dir .`.
 Proposal PDF: `reports/proposal/Beat2Body_Proposal.pdf`.
 
 ## 6. What we learned / current issues
@@ -263,6 +264,28 @@ changed). Tests whether size keeps 2.1b's energy and adds 2.2's poses and body s
   2.1b.3 `e-square-5f731354` = the same with the square shape (control).
 - Run 2.1b.1 (46.9M) finished: lowest val loss at 14k, then overfitting; local folder
   `runs/beat2body-diffusion-2.1b.1-large-2f9d37ca/`.
+
+**Results of the 2.1b family** (`reports/2026-11-19_2.1b_variants/`; test songs, 769 windows):
+
+| Run | FID_k | FID_p | Speed | BeatPow | BoneCV | Torso drift 20 s |
+|---|---|---|---|---|---|---|
+| 2.1b | 28.6 | 42.2 | 1.13 | 0.98 | 0.27 | 0.178 |
+| 2.1b.1 (46.9M) | 23.7 | 33.5 | 1.23 | 1.39 | 0.27 | 0.124 |
+| 2.1b.2 (new energy, gaussian) | **22.0** | **22.5** | 0.84 | 0.44 | 0.23 | 0.127 |
+| 2.1b.3 (new energy, square) | 22.7 | 23.2 | 0.87 | 0.45 | 0.23 | 0.141 |
+
+- 2.1b's real-looking BeatPow came from oversized limbs (1.4x real) and body-size pulsing, not rhythm: only 11% of
+  its motion power is at 1-4 Hz (real 22%). The new loss gives real limb amplitude and body size (hence the FIDs)
+  but slow motion (91% below 1 Hz, BeatPow 0.4). 2.1b.1 has the most realistic rhythm (18% at 1-4 Hz) and the fewest
+  body collapses.
+- **Shifting and foot sliding** (`sliding.py`): root speed is real, root jitter 1.2-1.5x real. The feet are the
+  problem: no foot planted in 70-77% of frames (real 44%), and a foot the model marks as planted moves 3-4x faster
+  than a real planted foot, so EDGE's foot loss (keyed on the model's own contact output) is nearly inactive. Window
+  cross-fading is not the cause (windows disagree by ~0.1 torso lengths, spread over 75 frames).
+- Next: (1) contact-driven foot locking after sampling (pin a planted ankle, move the root to compensate; no
+  retraining); (2) foot loss on the real contact labels + slower ankle, higher weight, root-acceleration penalty;
+  (3) an energy term on the size-normalized limbs' 1-4 Hz power; then the winning loss at 46.9M. 3D (AIST++) would
+  make contact physical but EDGE itself still slides in 3D, and it would drop the 2D-from-video premise.
 
 **Guidance sweep results** (64 advanced val windows, fixed noise; nearest-centroid genre accuracy on the real
 windows 0.53):
