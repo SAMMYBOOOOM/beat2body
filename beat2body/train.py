@@ -148,7 +148,10 @@ def add_args(p):
     g.add_argument("--foot-contact", choices=["pred", "label"], default="pred",
                    help="foot-skating loss on frames where the ankle is planted according to the model's own contact "
                         "output (pred, EDGE; averaged over all frames) or the real dancer (label; averaged over the "
-                        "planted frames). Its weight is the 4th --loss-weights value")
+                        "planted frames). Its weight is the 4th --loss-weights value, or --foot-weight")
+    g.add_argument("--foot-weight", type=float, default=None,
+                   help="foot-skating loss weight (overrides the 4th --loss-weights value; one value, so it passes "
+                        "through `aws submit`)")
     g.add_argument("--root-accel-weight", type=float, default=0.0,
                    help="loss on the root's acceleration vs the real one (against root jitter); 0 = off")
     g = p.add_argument_group("augmentation (train split only)")
@@ -260,6 +263,8 @@ def run(args):
     for k, v in RECIPES[args.recipe].items():            # recipe values for flags not given explicitly
         if getattr(args, k, None) is None:
             setattr(args, k, v)
+    if args.foot_weight is not None:
+        args.loss_weights = [*args.loss_weights[:3], args.foot_weight]
     if args.tiny:                    # small model; logging defaults only where not set explicitly
         args.d_model, args.ff, args.layers, args.heads = 64, 128, 2, 2
         for k, default, tiny in (("log_every", 100, 100), ("val_every", 2000, 500), ("sample_every", 10000, 1000)):
