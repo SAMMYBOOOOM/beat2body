@@ -30,8 +30,9 @@ from beat2body import paths
 DOC = __doc__
 REGION = os.environ.get("AWS_REGION", "us-east-1")
 ROLE_NAME = "SageMakerTraining-beat2body"
-# pytorch-training:2.9.0-gpu-py312-cu130-ubuntu22.04-sagemaker, verified in ECR on 2026-11-18
-IMAGE = ("763104351884.dkr.ecr.us-east-1.amazonaws.com/pytorch-training@"
+# pytorch-training:2.9.0-gpu-py312-cu130-ubuntu22.04-sagemaker, verified in ECR on 2026-11-18 (us-east-1) and
+# 2026-11-20 (us-west-2, same digest). Another region: set AWS_REGION; the job uses that region's copy.
+IMAGE = (f"763104351884.dkr.ecr.{REGION}.amazonaws.com/pytorch-training@"
          "sha256:86fbaa7cef705829a5cb92de9abca974817ca8b274b3b3d978cc2778b458ee67")
 JOB_PREFIX = "beat2body"
 os.environ.setdefault("AWS_SDK_UA_APP_ID", "AWSSkill-SageMaker")
