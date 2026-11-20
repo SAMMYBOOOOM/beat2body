@@ -18,6 +18,7 @@ Options beyond EDGE (off by default, see docs/pipeline_2d.md "Energy"):
     z-score scaling  Normalizer(..., dim_weight): data standardized per feature (more signal vs the noise);
                      dim_weight rescales the recon / velocity terms so the loss equals the MinMax loss
     energy_weight    phase-invariant loss on each joint's mean speed and movement amplitude per window
+                     (options: speed only, a bounded "gaussian" shape, size-normalized motion, low noise levels only)
                      (log ratio to the real window), against "swaying instead of dancing"
 """
 import math
@@ -101,11 +102,32 @@ def smooth_time(x, sigma):
     return y.reshape(B, -1, L).permute(0, 2, 1).reshape(x.shape)
 
 
-def energy_loss(pa, ta, valid, w, smooth=2.0):
+def size_normalized(j, valid):
+    """Absolute joints with frame-to-frame body-size changes removed: root + pelvis-centred joints x (window size /
+    frame size), size = mean on-screen length of the observed body bones. A dancer who grows or shrinks on screen
+    (moving in depth, or a model 'pulsing' its body) no longer counts as moving joints."""
+    pel = j[..., 11:13, :].mean(-2, keepdim=True)
+    lb = bone_lengths(j)                                                       # (B, L, 12)
+    vb = (valid[..., BODY_BONES[:, 0]] & valid[..., BODY_BONES[:, 1]]).float()
+    s_t = (lb * vb).sum(-1) / vb.sum(-1).clamp(min=1)                          # (B, L) frame size
+    has = (vb.sum(-1) > 0).float()
+    s_w = (s_t * has).sum(1, keepdim=True) / has.sum(1, keepdim=True).clamp(min=1)
+    s_t = torch.where(has > 0, s_t, s_w.expand_as(s_t)).clamp(min=1e-3)
+    return pel + (j - pel) * (s_w / s_t)[..., None, None]
+
+
+def energy_loss(pa, ta, valid, w, smooth=2.0, amplitude=1.0, shape="square", sigma=0.3, size_norm=False):
     """Phase-invariant: per window and joint, log ratio of the mean speed (absolute joints) and of the
     movement amplitude (std over time of the pelvis-centred joint) to the real window's. (B,) weights w.
     The speed is measured on motion blurred over `smooth` frames, so frame-to-frame jitter does not count
-    as energy (without it, the cheapest way to raise speed is jitter)."""
+    as energy (without it, the cheapest way to raise speed is jitter).
+    amplitude   weight of the amplitude term (0 = speed only)
+    shape       "square": d^2 (each window pulled to its real energy);
+                "gaussian": 2 sigma^2 (1 - exp(-d^2 / 2 sigma^2)), the same for small d but bounded for large d,
+                so energy is a tendency, not a target every window must hit
+    size_norm   measure on size_normalized() joints (size changes are not movement)"""
+    if size_norm:
+        pa, ta = size_normalized(pa, valid), size_normalized(ta, valid)
     mv = (valid[:, 1:] & valid[:, :-1]).float()                               # (B, L-1, 17)
     ps, ts = smooth_time(pa, smooth), smooth_time(ta, smooth)
     sp = _masked_mean((ps[:, 1:] - ps[:, :-1]).norm(dim=-1), mv, 1)            # (B, 17)
@@ -117,18 +139,24 @@ def energy_loss(pa, ta, valid, w, smooth=2.0):
     def amp(r):
         mu = _masked_mean(r, m, 1)                                            # (B, 17, 2)
         return (_masked_mean((r - mu[:, None]) ** 2, m, 1).sum(-1) + 1e-8).sqrt()   # (B, 17)
-    e = (torch.log(sp + 5e-3) - torch.log(st + 5e-3)) ** 2 \
-        + (torch.log(amp(rp) + 2e-2) - torch.log(amp(rt) + 2e-2)) ** 2
+
+    def shaped(d2):
+        return d2 if shape == "square" else 2 * sigma ** 2 * (1 - torch.exp(-d2 / (2 * sigma ** 2)))
+    e = shaped((torch.log(sp + 5e-3) - torch.log(st + 5e-3)) ** 2)
+    if amplitude:
+        e = e + amplitude * shaped((torch.log(amp(rp) + 2e-2) - torch.log(amp(rt) + 2e-2)) ** 2)
     present = (valid.float().sum(1) >= 10).float() * w[:, None]                # joints seen in >= 10 frames
     return (e * present).sum() / present.sum().clamp(min=1e-8)
 
 
 def motion_losses(pred_n, target_n, valid, root_valid, normalizer, weights=EDGE_WEIGHTS, bone_weight=0.0,
-                  sample_weight=None, energy_weight=0.0, energy_smooth=2.0):
+                  sample_weight=None, energy_weight=0.0, energy_smooth=2.0, energy_mask=None, energy_opts=None):
     """EDGE's four losses on normalized predictions / targets (B, L, 38), plus the projected bone-length
     loss: each body bone's on-screen length vs the same bone in the real frame (relative error), so
     foreshortening in the real data is kept and no constant length is assumed. sample_weight (B,) weights
-    each sequence (Min-SNR); the foot loss is not weighted (it uses the model's own contact output)."""
+    each sequence (Min-SNR); the foot loss is not weighted (it uses the model's own contact output).
+    energy_mask (B,) selects the sequences the energy loss applies to (e.g. low noise levels); energy_opts: see
+    energy_loss."""
     w = torch.ones(pred_n.shape[0], device=pred_n.device) if sample_weight is None else sample_weight
     m = feature_mask(valid, root_valid) * w[:, None, None]
     dw = normalizer.dim_weight
@@ -152,7 +180,8 @@ def motion_losses(pred_n, target_n, valid, root_valid, normalizer, weights=EDGE_
     parts = {"recon": recon.item(), "vel": vel.item(), "fk": fk.item(), "foot": foot.item(), "bone": bone.item()}
     total = weights[0] * recon + weights[1] * vel + weights[2] * fk + weights[3] * foot + bone_weight * bone
     if energy_weight > 0:
-        energy = energy_loss(pa, ta, valid & root_valid[..., None], w, energy_smooth)
+        ew = w if energy_mask is None else w * energy_mask.float()
+        energy = energy_loss(pa, ta, valid & root_valid[..., None], ew, energy_smooth, **(energy_opts or {}))
         parts["energy"] = energy.item()
         total = total + energy_weight * energy
     return total, parts
@@ -161,10 +190,14 @@ def motion_losses(pred_n, target_n, valid, root_valid, normalizer, weights=EDGE_
 class EDGEDiffusion:
     def __init__(self, model, normalizer, steps=1000, music_drop=0.25, genre_drop=0.25, guidance=2.0,
                  weights=EDGE_WEIGHTS, bone_weight=0.0, min_snr=0.0, param="x0", energy_weight=0.0,
-                 energy_smooth=2.0):
+                 energy_smooth=2.0, energy_amplitude=1.0, energy_shape="square", energy_sigma=0.3,
+                 energy_size_norm=False, energy_max_t=None):
         assert param in ("x0", "v"), param
         self.model, self.normalizer, self.T = model, normalizer, steps
         self.param, self.energy_weight, self.energy_smooth = param, energy_weight, energy_smooth
+        self.energy_opts = dict(amplitude=energy_amplitude, shape=energy_shape, sigma=energy_sigma,
+                                size_norm=energy_size_norm)
+        self.energy_max_t = energy_max_t      # energy loss only for diffusion steps t < energy_max_t (None = all)
         self.min_snr = min_snr
         self.ac = cosine_alphas_cumprod(steps)
         self.music_drop, self.genre_drop, self.guidance, self.weights = music_drop, genre_drop, guidance, weights
@@ -199,7 +232,8 @@ class EDGEDiffusion:
             sw = torch.clamp(ac / (1 - ac), max=self.min_snr)
             sw = sw / sw.mean().clamp(min=1e-8)
         return motion_losses(pred, x0, valid, root_valid, self.normalizer, self.weights, self.bone_weight, sw,
-                             self.energy_weight, self.energy_smooth)
+                             self.energy_weight, self.energy_smooth,
+                             None if self.energy_max_t is None else t < self.energy_max_t, self.energy_opts)
 
     def predict(self, x, cond, t, genre, guidance, music_guidance=None):
         """Guided x0. One weight (music_guidance None, EDGE): uncond + w (joint - uncond), where uncond drops

@@ -3,6 +3,7 @@
 \usepackage[T1]{fontenc}
 \usepackage{amsmath}
 \usepackage{booktabs}
+\usepackage{graphicx}
 \usepackage{balance}
 \usepackage{cite}
 \usepackage{microtype}
@@ -28,7 +29,7 @@ Final Project Proposal $\cdot$ November 19, 2026}}
 \maketitle
 
 \begin{abstract}
-Choreographers, animators, and game developers need dance motion that fits a given piece of music and style, but recording it with motion capture is expensive. We propose Beat2Body, a deep generative model that takes a music excerpt and one of ten dance genres and generates a 2D skeleton sequence that moves with the rhythm. Unlike prior music-to-dance systems trained on studio 3D motion capture, Beat2Body learns from 2D joint tracks extracted from ordinary single-camera video: 1,410 videos (5.2 hours) of the AIST Dance Video Database processed with three pose estimators. We adapt the EDGE diffusion transformer to image-plane motion and add losses for body-size stability and rhythmic energy. Preliminary results expose the central difficulty: a first model produced realistic poses but moved at half the real speed, while an energy loss restored real-dancer speed and halved the kinetic Fr\'echet distance on held-out songs at the cost of body-size stability. We will run controlled ablations of losses, training recipe, model size, and pose estimator against a recurrent baseline, and evaluate realism, rhythm, genre, and stability on songs never seen in training.
+Choreographers, animators, and game developers need dance motion that fits a given piece of music and style, but recording it with motion capture is expensive. We propose Beat2Body, a deep generative model that takes a music excerpt and one of ten dance genres and generates a 2D skeleton sequence that moves with the rhythm. Unlike prior music-to-dance systems trained on studio 3D motion capture, Beat2Body learns from 2D joint tracks extracted from ordinary single-camera video: 1,410 videos (5.2 hours) of the AIST Dance Video Database processed with three pose estimators. We adapt the EDGE diffusion transformer to image-plane motion and add losses for body-size stability and rhythmic energy. Preliminary results expose the central difficulty: a first model produced realistic poses but moved at half the real speed, while an energy loss restored real-dancer speed and halved the kinetic Fr\'echet distance on held-out songs at the cost of body-size stability; with EDGE's training recipe it also keeps real beat-band movement and is our base model. Separate music and genre guidance makes the requested genre more recognizable at unchanged realism, but no model yet times its accents to the beat. We will run controlled ablations of losses, training recipe, model size, and pose estimator against a recurrent baseline, and evaluate realism, rhythm, genre, and stability on songs never seen in training.
 \end{abstract}
 
 \begin{IEEEkeywords}
@@ -118,24 +119,27 @@ Held-out-song test & 36 / 236 & 489 / 769 & 10 / 10 \\
 Stage & Time & Work & Measure of success & Lead \\
 \midrule
 1. Data & Done & 2D dataset: 1,410 videos, three pose estimators, beat-aligned music features, held-out-song split. & Audit passes on all 4,824 clips; test songs disjoint from training. & YinHsuan Hsu \\
-\addlinespace[2pt]
 2. Baseline & Week 1 & Train the GRU on the full dataset. & Complete 20\,s rollouts; all metrics logged as the reference bar. & Sizhe Zhang \\
-\addlinespace[2pt]
 3. Diffusion ablations & Weeks 1--2 & Losses vs.\ recipe vs.\ size; loss rebalancing; regularization components one at a time. & Speed and beat-band power within 25\% of real, torso variation within 15\%, FD$_p$ within 20\% of Model A. & Sizhe Zhang \\
-\addlinespace[2pt]
-4. Model design experiments & Weeks 2--3 & Separate music and genre guidance; beat-relative cross-attention; kinematic skeleton decoder; phrase planning (each only if the previous step leaves its target unmet). & Accents follow a shifted beat grid at unchanged beat-band power; motion responds to the track and genre; torso within 15\%; fewer repeated moves over 20\,s. & Sizhe Zhang \\
-\addlinespace[2pt]
+4. Model design experiments & Weeks 2--3 & Separate music and genre guidance (done); beat-relative cross-attention (in training); kinematic skeleton decoder; phrase planning (each only if the previous step leaves its target unmet). & Accents follow a shifted beat grid at unchanged beat-band power; motion responds to the track and genre; torso within 15\%; fewer repeated moves over 20\,s. & Sizhe Zhang \\
 5. Data and pose-tool study & Weeks 2--3 & Advanced-only vs.\ all videos; DWPose vs.\ OpenPose vs.\ MediaPipe on matched windows. & Rankings whose differences exceed the spread across seeds. & YinHsuan Hsu \\
-\addlinespace[2pt]
 6. Held-out evaluation & Week 3 & Locked settings; test songs; timing test; genre classifier. & Main model beats GRU on FD$_k$, FD$_p$, and timing; genre accuracy well above 10\%. & Yi Xin \\
-\addlinespace[2pt]
 7. Demo and report & Week 4 & Music-file input, 20\,s videos with sound, report and poster. & End-to-end demo on a new track; documented failure cases. & All members \\
 \bottomrule
 \end{tabular}
 \end{table*}
 
 \subsection{Preliminary results}
-We trained 7.1M-parameter diffusion models on cloud GPUs (Table~\ref{tab:pilot}). Model A, with per-video scaling and the bone-length loss, produced the most realistic poses and a stable torso, but moved at 53\% of the real speed with 24\% of the real movement in the 1--4\,Hz band (Fig.~\ref{fig:power}), on training and validation music alike, so the problem is not overfitting. Standardizing the motion features with $v$-prediction \cite{salimans2022} destroyed pose quality, and an energy loss on raw speed was partly met with jitter. Run 2.1 (smoothed energy loss, all 1,410 videos) restored real-dancer speed; on the 769 held-out-song windows it halved the kinetic distance of Model A (22.5 vs.\ 43.7) and raised kinetic diversity from 2.5 to 7.1 (real: 7.4), but its pose distance rose from 34.6 to 41.8 and its torso varied twice as much as real (0.223 vs.\ 0.105). Fig.~\ref{fig:pose} shows Model A's restrained movement next to the recorded dancer. These results define the trade-off the proposed experiments must resolve.
+We trained 7.1M-parameter diffusion models on cloud GPUs (Table~\ref{tab:pilot}). Model A, with per-video scaling and the bone-length loss, produced the most realistic poses and a stable torso, but moved at 53\% of the real speed with 24\% of the real movement in the 1--4\,Hz band (Fig.~\ref{fig:power}), on training and validation music alike, so the problem is not overfitting. Standardizing the motion features with $v$-prediction \cite{salimans2022} destroyed pose quality, and an energy loss on raw speed was partly met with jitter. Run 2.1 (smoothed energy loss, all 1,410 videos) restored real-dancer speed; on the 769 held-out-song windows it halved the kinetic distance of Model A (22.5 vs.\ 43.7) and raised kinetic diversity from 2.5 to 7.1 (real: 7.4), but its pose distance rose from 34.6 to 41.8 and its torso varied twice as much as real (0.223 vs.\ 0.105). Fig.~\ref{fig:pose} shows Model A's restrained movement next to the recorded dancer. Run 2.1b, the same losses with EDGE's recipe, keeps real speed (1.13) and beat-band power (0.98) on held-out songs with FD$_k$ 28.6 and less torso variation (0.178); it is our base model. EDGE's losses alone damp the motion again (Run 2.3: speed 0.53), even at 46.9M parameters (Run 2.2: 0.64). These results define the trade-off the proposed experiments must resolve.
+
+\textbf{First design experiments.} Separate guidance works as intended on Run 2.1b (Fig.~\ref{fig:guidance}): motion follows the track with $w_m$ and the requested genre with $w_g$, and the two compete; $w_g{=}2$, $w_m{=}1$ raises the accuracy of a nearest-centroid genre classifier from 0.34 to 0.45 (real: 0.53) at unchanged FD$_k$. Guidance does not improve timing: over 632 validation windows, accents concentrate on the beat at 0.051 for real dances and 0.026 for random grids, but at most 0.016 for our models; hence the beat-relative attention now in training.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{fig_guidance.pdf}
+\caption{Separate guidance on Run 2.1b (64 validation windows, same noise); circled: $w_g{=}2$, $w_m{=}1$.}
+\label{fig:guidance}
+\end{figure}
 
 \begin{table}[t]
 \caption{Diffusion models (7.1M) on advanced validation windows}
@@ -151,7 +155,9 @@ Model A & 43.7 & \textbf{23.1} & \textbf{0.038} & 0.53 & 0.24 & \textbf{0.111} \
 Regularized & 46.5 & 46.6 & 0.063 & 0.57 & 0.20 & 0.157 \\
 + z-score, $v$ & 974 & 69.1 & 0.075 & 1.06 & 0.26 & 0.047 \\
 + energy (raw) & 327 & 37.0 & 0.076 & 0.80 & 0.33 & 0.077 \\
-Run 2.1 & \textbf{36.9} & 67.3 & 0.054 & 1.19 & 1.71 & 0.186 \\
+Run 2.1 & 36.9 & 67.3 & 0.054 & 1.19 & 1.71 & 0.186 \\
+Run 2.1b (base) & \textbf{27.4} & 68.4 & 0.055 & 1.04 & 1.15 & 0.186 \\
+Run 2.3 & 45.5 & 30.2 & 0.053 & 0.53 & 0.21 & 0.077 \\
 \midrule
 Real & 0 & 0 & 0.029 & 1.00 & 1.00 & 0.103 \\
 \bottomrule
@@ -159,13 +165,13 @@ Real & 0 & 0 & 0.029 & 1.00 & 1.00 & 0.103 \\
 
 \vspace{2pt}
 \begin{minipage}{\columnwidth}
-\footnotesize 440 five-second windows. FD: Fr\'echet distance of kinetic and pose features. Speed and Beat (1--4\,Hz power, BeatPow): ratios to the real windows. Torso: standard deviation over mean of torso length in ten 20-second generations. The ablations trained 20,000 updates on advanced dances; Run 2.1 trained 30,000 on all videos.
+\footnotesize 440 five-second windows. FD: Fr\'echet distance of kinetic and pose features. Speed and Beat (1--4\,Hz power, BeatPow): ratios to the real windows. Torso: standard deviation over mean of torso length in ten 20-second generations. The ablations trained 20,000 updates on advanced dances; Runs 2.x trained 30,000 on all videos.
 \end{minipage}
 \end{table}
 
 \begin{figure}[t]
 \centering
-\begin{tikzpicture}[x=1.12cm,y=2.12cm,font=\footnotesize]
+\begin{tikzpicture}[x=1.12cm,y=1.2cm,font=\footnotesize]
   \foreach \y/\value in {0/0,.5/0.5,1/1.0} {
     \draw[inkgray!24,line width=.35pt] (0,\y) -- (5.28,\y);
     \node[anchor=east,inner sep=3pt] at (0,\y) {\value};
@@ -179,9 +185,9 @@ Real & 0 & 0 & 0.029 & 1.00 & 1.00 & 0.103 \\
   }
   \draw[inkgray,thin] (0,1.28) -- (0,0) -- (5.28,0);
   \draw[inkgray,densely dashed] (0,1) -- (5.28,1);
-  \node[anchor=south east,inner sep=3pt] at (5.28,1) {Real reference};
-  \node at (2.64,-.33) {Motion frequency (Hz)};
-  \node[rotate=90] at (-.60,.65) {Power ratio};
+  \node[anchor=south,inner sep=2pt] at (2.65,1) {Real reference};
+  \node at (2.64,-.52) {Motion frequency (Hz)};
+  \node[rotate=90] at (-.60,.6) {Power ratio};
 \end{tikzpicture}
 \caption{Model A's motion power divided by real-dancer power in each frequency band, from the archived 96-window validation analysis. The dark bars mark 1--4\,Hz. Power measures how much movement occurs at those frequencies.}
 \label{fig:power}
@@ -337,16 +343,16 @@ Real & 0 & 0 & 0.029 & 1.00 & 1.00 & 0.103 \\
 \end{figure}
 
 \subsection{Step-by-step plan and measures of success}
-Table~\ref{tab:plan} lists the stages in dependency order with their success measures. Stage 3 separates the factors that Run 2.1 changed together: the same losses with EDGE's training recipe, EDGE's original losses at 7.1M and 46.9M parameters (these runs are under way), then rebalancing the losses (the velocity term currently contributes about 1\% of the total) and adding regularization components one at a time. All comparisons fix model size, update budget, sampling settings, and evaluation windows, and use repeated seeds.
+Table~\ref{tab:plan} lists the stages in dependency order with their success measures. Stage 3 separates the factors that Run 2.1 changed together: the same losses with EDGE's training recipe, EDGE's original losses at 7.1M and 46.9M parameters (Runs 2.1b, 2.3, 2.2: done), then rebalancing the losses (the velocity term currently contributes about 1\% of the total) and adding regularization components one at a time. All comparisons fix model size, update budget, sampling settings, and evaluation windows, and use repeated seeds.
 
 \textbf{Model design experiments.} Stage 4 tests architectural changes in order of cost. (1) \emph{Separate guidance:} training already drops music and genre independently, so at sampling time we combine three predictions as $\hat{x}_u + w_g(\hat{x}_g - \hat{x}_u) + w_m(\hat{x}_{gm} - \hat{x}_g)$, where equal weights reproduce the current formula; varying one weight at a time on an existing checkpoint shows whether the motion responds to the track and to the requested genre. (2) \emph{Beat-relative cross-attention:} a learned attention bias based on each motion frame's signed distance to nearby beats, in fractions of a beat, lets different heads learn anticipation, delay, and offbeat accents, in the spirit of beat-aware diffusion \cite{gao2026}; we test whether accents follow a deliberately shifted beat grid at fixed tempo, genre, and seed, reporting beat-band power alongside so that more movement alone does not count as better timing. (3) If torso variation stays high, a \emph{kinematic decoder} predicts pelvis translation and bone directions along the skeleton tree with a body scale shared across the sequence and per-frame projected-length changes, so limb lengths cannot drift while foreshortening is kept; ankle contact then gets its own supervised head. (4) If 20-second dances repeat short movements, \emph{phrase planning} predicts a coarse root path and pose anchors every few beats from the whole excerpt and conditions the five-second windows on them, following coarse-to-fine long-dance generation \cite{lodge2024}.
 
-\textbf{Evaluation.} Kinetic and pose Fr\'echet distances (FD$_k$, FD$_p$) compare per-clip statistics of joint speed and acceleration, and of pelvis-relative joint positions and spreads, with real dances \cite{li2021}; we also report diversity, a foot-sliding proxy \cite{tseng2023}, beat-band power, and torso variation over 20\,s. For timing, we compare the share of joint acceleration within two frames of the beats with the share at phase-shifted grids, calibrated on real dances with frozen-pose and mismatched-audio controls; the standard beat-alignment score is insufficient in 2D, scoring a jittered frozen pose (0.272) above real motion (0.228). A genre classifier trained on real motion scores samples that share audio but differ in requested genre. Final numbers are computed once, on the held-out songs, after all settings are fixed.
+\textbf{Evaluation.} Kinetic and pose Fr\'echet distances (FD$_k$, FD$_p$) compare per-clip statistics of joint speed and acceleration, and of pelvis-relative joint positions and spreads, with real dances \cite{li2021}; we also report diversity, a foot-sliding proxy \cite{tseng2023}, beat-band power, and torso variation over 20\,s. For timing, we compare the share of joint acceleration within two frames of the beats with the share at phase-shifted grids, calibrated on real dances and frozen poses; the standard beat-alignment score is insufficient in 2D, scoring a jittered frozen pose (0.272) above real motion (0.228). A genre classifier trained on real motion scores samples that share audio but differ in requested genre. Final numbers are computed once, on the held-out songs, after all settings are fixed.
 
 \textbf{Team responsibilities.} YinHsuan Hsu leads pose and audio processing, data audits, and the pose-estimator study. Sizhe Zhang leads the baseline and diffusion models, cloud training, and ablations. Yi Xin leads the evaluation metrics, held-out testing, and visualization. All members review the demo and prepare the report and poster.
 
 \section{Feasibility and Limitations}
-\textbf{Endpoint.} The semester goal is an evaluated 2D generator with a music-synchronized demo; the data, training, evaluation, and rendering code already exist. We stop at 2D because the four-week schedule and our compute (single 24\,GB GPUs; a 30,000-update run takes about 45 minutes for the 7.1M model and 1.75 hours for the 46.9M model) leave room to solve the rhythm--stability trade-off, but not to also build a 3D pipeline. Rendering meshes and simulating physics are out of scope. If time allows, we will load the AIST++ 3D annotations \cite{li2021} as a first step toward 3D.
+\textbf{Endpoint.} The semester goal is an evaluated 2D generator with a music-synchronized demo; the data, training, evaluation, and rendering code already exist. We stop at 2D because the four-week schedule and our compute (single 24\,GB GPUs; a 30,000-update run takes about 45 minutes for the 7.1M model and 1.75 hours for the 46.9M model) leave room to solve the rhythm--stability trade-off, but not to also build a 3D pipeline. If time allows, we will load the AIST++ 3D annotations \cite{li2021} as a first step toward 3D.
 
 \textbf{Challenges and initial solutions.}
 \begin{itemize}
@@ -357,7 +363,7 @@ Table~\ref{tab:plan} lists the stages in dependency order with their success mea
 \item \emph{Noisy 2D labels:} occlusion and foreshortening in breaking and turns; validity masks, smoothing, and per-frame bone targets.
 \end{itemize}
 
-\textbf{Limitations that need investigation.} We do not yet know whether higher beat-band power is perceived as better timing, whether validation loss selects the checkpoints with the best dances (beat-level movement kept improving after it stopped), whether the model follows the genre label when the music suggests another genre, how it handles music with variable tempo or weak beats, and whether differences between pose estimators survive training. Earlier demos used some held-out songs; we document this and lock all settings before final scoring.
+\textbf{Limitations that need investigation.} We do not yet know whether higher beat-band power is perceived as better timing, whether validation loss selects the checkpoints with the best dances (beat-level movement kept improving after it stopped), whether the model follows the genre label when the music suggests another genre, how it handles music with variable tempo or weak beats, and whether differences between pose estimators survive training. The beat phase, estimated from the audio, is ambiguous between on- and off-beat for 7 of 60 songs (four test songs); we will report timing with and without them. Earlier demos used some held-out songs; we document this and lock all settings before final scoring.
 
 \balance
 \section{Potential Impact}

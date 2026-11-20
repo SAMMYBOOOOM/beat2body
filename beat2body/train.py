@@ -131,6 +131,20 @@ def add_args(p):
     g.add_argument("--energy-smooth", type=float, default=2.0,
                    help="energy loss: speed measured on motion blurred over this many frames (jitter does not "
                         "count); 0 = raw speed (the first version, which the model met partly with jitter)")
+    g.add_argument("--energy-amplitude", type=float, default=1.0,
+                   help="energy loss: weight of the movement-amplitude term (0 = speed only; the amplitude term "
+                        "pushed limbs to ~1.3x the real range)")
+    g.add_argument("--energy-shape", choices=["square", "gaussian"], default="square",
+                   help="energy loss per window and joint: square = d^2 of the log ratio to real (every window pulled "
+                        "to its real energy); gaussian = 2 sigma^2 (1 - exp(-d^2 / 2 sigma^2)): same for small d, "
+                        "bounded for large d")
+    g.add_argument("--energy-sigma", type=float, default=0.3, help="gaussian energy loss width (log ratio)")
+    g.add_argument("--energy-size-norm", action="store_true",
+                   help="energy loss on motion with frame-to-frame body-size changes removed (size pulses and depth "
+                        "changes do not count as movement)")
+    g.add_argument("--energy-max-t", type=int, default=None,
+                   help="energy loss only at diffusion steps t < this (500 = noise below half the signal); "
+                        "default: all steps")
     g = p.add_argument_group("augmentation (train split only)")
     g.add_argument("--extra-tools", nargs="*", choices=TOOLS, default=None,
                    help="other pose tools' keypoints of the same videos as extra training views")
@@ -164,7 +178,8 @@ def add_args(p):
 CFG_KEYS = ("model", "tool", "feature_set", "scale_norm", "bone_weight", "min_snr", "seq_len", "d_model", "ff",
             "layers", "heads", "dropout", "gru_hidden", "gru_layers", "diffusion_steps", "music_drop", "genre_drop",
             "guidance", "loss_weights", "normalizer", "param", "energy_weight", "energy_smooth", "beat_attn",
-            "beat_bins", "beat_range")
+            "beat_bins", "beat_range", "energy_amplitude", "energy_shape", "energy_sigma", "energy_size_norm",
+            "energy_max_t")
 
 
 def build_model(cfg):
@@ -181,7 +196,9 @@ def make_diffusion(net, normalizer, cfg):
     return EDGEDiffusion(net, normalizer, cfg["diffusion_steps"], cfg["music_drop"], cfg["genre_drop"],
                          cfg["guidance"], tuple(cfg["loss_weights"]), cfg.get("bone_weight", 0.0),
                          cfg.get("min_snr", 0.0), cfg.get("param", "x0"), cfg.get("energy_weight", 0.0),
-                         cfg.get("energy_smooth", 0.0))
+                         cfg.get("energy_smooth", 0.0), cfg.get("energy_amplitude", 1.0),
+                         cfg.get("energy_shape", "square"), cfg.get("energy_sigma", 0.3),
+                         cfg.get("energy_size_norm", False), cfg.get("energy_max_t"))
 
 
 class Generator:

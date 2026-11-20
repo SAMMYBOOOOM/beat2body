@@ -240,6 +240,30 @@ planning if the 20-second samples still repeat short movements or lack clear tra
   3.1 `ba-pure-8a92bce1` (= 2.3 + beat attention; 5 h cap, faster bias code), 3.2 `ba-co-48ba8a4d` (= 2.1b + beat attention; 5 h cap, faster bias code; the first submissions with the per-layer bias ran at ~3 steps/s vs 10.5 without and were stopped). The bias is now built once per batch for all layers as one-hot @ table
   matmuls (the per-layer gather's backward accumulated millions of gradients into 33 bins).
 
+**Results of 3.1 / 3.2** (`reports/2026-11-19_eval_2x/metrics/run_3.*`): beat attention made no measurable timing
+difference. 3.2 vs 2.1b: test FID_k 41.8 vs 28.6, FID_p 33.4 vs 42.2, speed 1.27, BeatPow 1.20; beat lock 0.024
+(chance 0.026), shifted-grid response within noise. Dropped from the base model.
+
+**Run 2.1b.1** = 2.1b's settings at 46.9M (d 512, ff 1024, 8 layers, 8 heads), job
+`beat2body-diffusion-base-large-2f9d37ca-2026-11-19-20-32-57-631` (SageMaker tag `run=2.1b.1`; job names cannot be
+changed). Tests whether size keeps 2.1b's energy and adds 2.2's poses and body stability.
+
+**Energy overshoot investigation (2026-11-19)**: 128 advanced val windows, generated / real:
+- Generated bodies are not larger (torso 0.97-1.00, bones 0.95-0.97 for the 2.1b family), so size does not explain
+  the extra speed. The movement range (limbs about the pelvis) is 1.30-1.37x real with the energy loss and 0.73-0.78x
+  without it: the energy loss (amplitude term, applied at every noise level) overshoots.
+- Real data has depth motion: in 43 of 174 advanced videos all bones grow together as the pelvis moves down in the
+  image (toward the camera); slow size change median 25%, up to 85% (ballet jazz). The models learned size changes
+  as free motion: torso length pulses at 1-4 Hz at 1.6x real (2.1b) to 2.7x (2.1b.1 at 14k), and the energy loss
+  counts these pulses as movement.
+- New energy-loss options (`train`): `--energy-amplitude` (0 = speed only), `--energy-shape gaussian`
+  (`--energy-sigma`; bounded per window: energy as a tendency, not a target), `--energy-size-norm` (size changes are
+  not movement), `--energy-max-t` (low noise levels only). Defaults = the previous loss.
+- Runs: 2.1b.2 `e-gauss-b9934c0c` = 2.1b with energy 0.1, speed only, size-normalized, t < 500, gaussian sigma 0.3;
+  2.1b.3 `e-square-5f731354` = the same with the square shape (control).
+- Run 2.1b.1 (46.9M) finished: lowest val loss at 14k, then overfitting; local folder
+  `runs/beat2body-diffusion-2.1b.1-large-2f9d37ca/`.
+
 **Guidance sweep results** (64 advanced val windows, fixed noise; nearest-centroid genre accuracy on the real
 windows 0.53):
 
