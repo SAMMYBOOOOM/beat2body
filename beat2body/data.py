@@ -30,7 +30,8 @@ the camera no longer look bigger); within a video, real foreshortening is kept. 
 the single dataset-wide scale of the cleaned keypoints.
 
 Foot contact: an ankle is "in contact" when its image speed (with root motion) is below
-CONTACT_THRESHOLD torso lengths per frame (~1.5 px at 1080p, ~40% of frames).
+CONTACT_THRESHOLD torso lengths per frame (~1.5 px at 1080p, ~40% of frames). contact[t] describes the step
+t-1 -> t (frame 0 copies frame 1), so the step t -> t+1 is planted when contact[t+1] is set.
 
     python -m beat2body data --tool dwpose --download      # check: shapes, NaNs, stats, speed
 """
@@ -129,12 +130,17 @@ def video_motion(tool, category, video_id, scale_norm="video"):
     if scale_norm in ("video", "dancer"):
         t = (dancer_torso(tool, video_id) if scale_norm == "dancer" else None) or torso_length(kp, valid)
         kp, root = kp / t, root / t
-    ankles = kp[:, ANKLES] + root[:, None]
-    speed = np.linalg.norm(np.diff(ankles, axis=0), axis=-1)
-    speed = np.concatenate([speed[:1], speed])                   # (T, 2)
-    contact = (speed < CONTACT_THRESHOLD).astype(np.float32)
+    contact = contact_labels(kp[:, ANKLES] + root[:, None])
     motion = np.concatenate([contact, root, kp.reshape(len(kp), -1)], 1)
     return motion, valid.astype(bool), valid[:, L_HIP] & valid[:, R_HIP]
+
+
+def contact_labels(ankles):
+    """(T, 2, 2) absolute ankle positions -> (T, 2) float 0/1: contact[t] = the ankle moved less than
+    CONTACT_THRESHOLD over the step t-1 -> t (contact[0] = contact[1])."""
+    speed = np.linalg.norm(np.diff(ankles, axis=0), axis=-1)
+    speed = np.concatenate([speed[:1], speed])                   # (T, 2)
+    return (speed < CONTACT_THRESHOLD).astype(np.float32)
 
 
 def video_audio(video_id, feature_set):

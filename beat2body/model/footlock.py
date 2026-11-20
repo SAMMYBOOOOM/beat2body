@@ -83,7 +83,7 @@ def foot_lock(motion, threshold=0.5, min_frames=3, blend=4, root_smooth=0.0, ik=
     # 2. root velocity absorbs the planted ankles' velocity
     ank = np.stack([rel[:, LEGS[k][2]] for k in range(2)], 1) + root[:, None]       # (T, 2, 2)
     va = ank[1:] - ank[:-1]                                                          # (T-1, 2, 2)
-    wt = np.maximum(w[1:], w[:-1])                                                    # weight of the step t -> t+1
+    wt = w[1:]                       # the step t -> t+1 is planted when contact[t+1] is (contact[t]: step t-1 -> t)
     corr = (wt[..., None] * va).sum(1) / np.maximum(wt.sum(1), 1.0)[:, None]
     root = np.concatenate([root[:1], root[0] + np.cumsum(root[1:] - root[:-1] - corr, 0)])
 

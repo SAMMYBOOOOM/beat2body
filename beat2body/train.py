@@ -145,10 +145,11 @@ def add_args(p):
     g.add_argument("--energy-max-t", type=int, default=None,
                    help="energy loss only at diffusion steps t < this (500 = noise below half the signal); "
                         "default: all steps")
-    g.add_argument("--foot-contact", choices=["pred", "label"], default="pred",
+    g.add_argument("--foot-contact", choices=["pred", "label", "label-prev"], default="pred",
                    help="foot-skating loss on frames where the ankle is planted according to the model's own contact "
                         "output (pred, EDGE; averaged over all frames) or the real dancer (label; averaged over the "
-                        "planted frames). Its weight is the 4th --loss-weights value, or --foot-weight")
+                        "planted frames; label-prev = the first, one-step-late version used by runs 4.1 / 4.2). "
+                        "Its weight is the 4th --loss-weights value, or --foot-weight")
     g.add_argument("--foot-weight", type=float, default=None,
                    help="foot-skating loss weight (overrides the 4th --loss-weights value; one value, so it passes "
                         "through `aws submit`)")

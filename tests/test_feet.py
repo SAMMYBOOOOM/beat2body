@@ -123,3 +123,49 @@ def test_foot_mask_limits_foot_and_root_losses_to_selected_sequences():
     off = _losses(pred, target, foot_contact="label", root_accel_weight=1.0, foot_mask=torch.tensor([False]))
     on = _losses(pred, target, foot_contact="label", root_accel_weight=1.0, foot_mask=torch.tensor([True]))
     assert off["foot"] == 0 and on["foot"] > 1e-5
+
+
+def _step_motion(T=60, land=10, lift=20):
+    """Left ankle moves until frame `land`, stands still through frame `lift`, then moves again; labels from the
+    loader's rule (contact_labels)."""
+    from beat2body.data import contact_labels
+    m = torch.from_numpy(_sliding(T))
+    m[:, 2] = 0                                             # root still
+    x = torch.zeros(T)
+    for t in range(1, T):
+        x[t] = x[t - 1] + (0.0 if land < t <= lift else 0.05)
+    rel = m[:, 4:].reshape(T, 17, 2)
+    rel[:, 15, 0] += x
+    m[:, 4:] = rel.reshape(T, -1)
+    ank = absolute_joints(m)[:, [15, 16]].numpy()
+    m[:, :2] = torch.from_numpy(contact_labels(ank))
+    return m
+
+
+def _static_steps(m, mode):
+    """Which steps t -> t+1 the label foot loss penalizes for the left ankle (probe: move only that step)."""
+    out, base = [], _losses(m, m, foot_contact=mode)["foot"]
+    for t in range(len(m) - 1):
+        pred = m.clone()
+        rel = pred[:, 4:].reshape(len(m), 17, 2)
+        rel[t + 1:, 15, 1] += 0.1                           # a jump at step t -> t+1 only
+        pred[:, 4:] = rel.reshape(len(m), -1)
+        if _losses(pred, m, foot_contact=mode)["foot"] > base + 1e-6:
+            out.append(t)
+    return out
+
+
+def test_aligned_labels_cover_touchdown_and_lift_off():
+    m = _step_motion()
+    lab = m[:, 0]
+    assert lab[10] == 0 and lab[11] == 1 and lab[20] == 1 and lab[21] == 0     # contact[t]: step t-1 -> t
+    # aligned: exactly the still steps 10 -> 11 ... 19 -> 20 (touchdown step included, lift-off step 20 -> 21 not)
+    assert _static_steps(m, "label") == list(range(10, 20))
+    # the first version: one step late (misses touchdown 10 -> 11, penalizes lift-off 20 -> 21)
+    assert _static_steps(m, "label-prev") == list(range(11, 21))
+
+
+def test_real_motion_has_no_foot_loss_with_aligned_labels():
+    m = _step_motion()
+    assert _losses(m, m, foot_contact="label")["foot"] < 1e-12
+    assert _losses(m, m, foot_contact="label-prev")["foot"] > 1e-5                  # penalizes the real lift-off

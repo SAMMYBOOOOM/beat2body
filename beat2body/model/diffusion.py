@@ -159,7 +159,8 @@ def motion_losses(pred_n, target_n, valid, root_valid, normalizer, weights=EDGE_
     energy_mask (B,) selects the sequences the energy loss applies to (e.g. low noise levels); energy_opts: see
     energy_loss.
     foot_contact: "pred" (EDGE) = foot loss on frames the model's own contact output marks as planted, averaged over
-    all frames; "label" = on frames the real dancer's ankle is planted (observed), averaged over those frames only.
+    all frames; "label" = on the steps t -> t+1 where the real dancer's ankle is planted (contact[t+1]; observed at
+    both ends), averaged over those steps only; "label-prev" = the first version (contact[t], one step late).
     root_accel_weight: squared error of the root's acceleration vs the real one (torso lengths / frame^2), against
     root jitter. foot_mask (B,) selects the sequences the label foot loss and the root-acceleration loss apply to
     (e.g. low noise levels: at high noise the x0 estimate is a blurry mean, and keeping its feet still means keeping
@@ -178,11 +179,14 @@ def motion_losses(pred_n, target_n, valid, root_valid, normalizer, weights=EDGE_
     feet = pa[..., ANKLE_IDX, :]                                            # (B, L, 2, 2)
     foot_v = torch.zeros_like(feet)
     foot_v[:, :-1] = feet[:, 1:] - feet[:, :-1]
-    if foot_contact == "label":
+    if foot_contact in ("label", "label-prev"):
         ok = valid[..., list(ANKLE_IDX)] & root_valid[..., None]            # (B, L, 2) ankle seen, root known
-        static = (normalizer.denorm(target_n)[..., CONTACT] > 0.5) & ok
-        static[:, :-1] &= ok[:, 1:]
-        static[:, -1] = False
+        lab = normalizer.denorm(target_n)[..., CONTACT] > 0.5               # lab[t]: still over t-1 -> t
+        static = torch.zeros_like(lab)                                      # static[t]: step t -> t+1 planted
+        if foot_contact == "label":
+            static[:, :-1] = lab[:, 1:] & ok[:, :-1] & ok[:, 1:]
+        else:     # runs 4.1 / 4.2 (commit 0825e9d): one step late, penalizes lift-off, misses touchdown
+            static[:, :-1] = lab[:, :-1] & ok[:, :-1] & ok[:, 1:]
         fw = w if foot_mask is None else w * foot_mask.float()
         sf = static.float() * fw[:, None, None]
         foot = ((foot_v ** 2).sum(-1) * sf).sum() / sf.sum().clamp(min=1)
