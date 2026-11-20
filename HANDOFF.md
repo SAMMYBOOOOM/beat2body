@@ -295,6 +295,14 @@ the foot losses froze the dancer: run 4.2-allt).
 4.2 = 2.1b.2 + foot fix (7.1M, job `v42-*`); jobs may run in us-east-1 or us-west-2 (`AWS_REGION=us-west-2`; bucket,
 data and role are set up in both). Evaluate them with and without `--foot-lock --root-smooth 1`.
 
+**4.x results (test songs; `reports/2026-11-20_feet/README.md`)**: 4.1 (46.9M) = most balanced model so far, raw:
+FID_k 23.5, FID_p 25.1, speed 1.16, BeatPow 1.15, BoneCV 0.226, PFC 0.020, no-foot-planted 33% (real 40%), root
+jitter at real, swing speed 0.102 (real 0.089); locking hurts it (FID_k 57). The 7.1M runs 4.2 / 4.2-allt / 4.3
+froze their feet (swing 0.004, FID_p 78-119): foot weight 50 is too high for the small model; aligned labels (4.3,
+`--foot-contact label`, the fixed version; 4.1 / 4.2 used `label-prev`) do not change that. Always check swing speed.
+Contact labels from heel / toe points (stage B) and the plan for a contact head and soft lock:
+`reports/2026-11-20_feet/CONTACT_PLAN.md`.
+
 **Guidance sweep results** (64 advanced val windows, fixed noise; nearest-centroid genre accuracy on the real
 windows 0.53):
 

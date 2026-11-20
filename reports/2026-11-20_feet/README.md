@@ -66,3 +66,33 @@ as without it.
 Each run was submitted as several identical copies across instance types, purchase options and the two regions
 (AWS GPU capacity was short); the first copy to start training was kept and the others stopped. For a us-west-2 job,
 run the `aws` commands with `AWS_REGION=us-west-2`.
+
+## Results of the foot-fix runs (2026-11-20)
+
+Test songs, 769 windows, seed 0. "Lock" is the corrected foot lock (stage A conventions) with root smoothing 1.
+The full table, including contact duration and share, is in `metrics/feet2_summary.csv`
+(`python reports/2026-11-20_feet/summarize.py`).
+
+| | Kinetic FID | Pose FID | Speed | On-beat | BoneCV | PFC | No foot planted | Root jitter | Stance drift | Swing speed |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| Real | 0 | 0 | 1.00 | 1.00 | 0.167 | 0.033 | 40% | 0.0125 | 0.022 | 0.089 |
+| 2.1b.2 raw | 21.9 | 22.5 | 0.84 | 0.44 | 0.227 | 0.046 | 65% | 0.016 | 0.199 | 0.054 |
+| 2.1b.2 + lock | 23.4 | 22.5 | 0.79 | 0.45 | 0.227 | 0.021 | 37% | 0.012 | 0.007 | 0.050 |
+| **4.1 raw** (46.9M) | 23.5 | 25.1 | 1.16 | 1.15 | 0.226 | 0.020 | 33% | 0.0122 | 0.081 | 0.102 |
+| 4.1 + lock | 57.0 | 25.0 | 1.24 | 1.15 | 0.226 | 0.007 | 29% | 0.024 | 0.002 | 0.097 |
+| 4.2 raw (7.1M) | 32.7 | 109.5 | 0.72 | 0.66 | 0.199 | 0.065 | 1.6% | 0.009 | 0.013 | **0.004** |
+| 4.2-allt raw | 28.8 | 77.9 | 0.70 | 0.58 | 0.185 | 0.069 | 1.5% | 0.008 | 0.021 | 0.005 |
+| 4.3 raw (aligned labels) | 31.5 | 118.8 | 0.74 | 0.71 | 0.192 | 0.068 | 1.4% | 0.009 | 0.012 | 0.004 |
+
+- **The small models froze their feet.** 4.2, 4.2-allt and 4.3 keep a foot planted in 98% of frames and barely
+  move it between contacts (swing speed 0.004, real 0.089). Pose FID collapses (78–119). At weight 50, a small model
+  that cannot place steps precisely minimizes the penalty by never stepping. Aligning the labels (4.3) does not
+  change this. The training checks missed it because they measure whole-body speed, which stayed reasonable.
+- **The large model learned to step.** 4.1 improves on its parent 2.1b.1 everywhere: pose FID 33.5 → 25.1,
+  on-beat movement 1.39 → 1.15, BoneCV 0.272 → 0.226, PFC 0.039 → 0.020. Its contact share, contact length, swing
+  speed and root jitter are close to real. What remains is stance drift (0.081 vs 0.022) and slight over-energy.
+- **Foot locking hurts 4.1.** Kinetic FID goes 23.5 → 57.0 and root jitter doubles. With many real-like contacts,
+  the lock switches which foot drives the root at every hand-over, which puts jumps in the root's velocity. Use 4.1
+  raw. The soft sequence lock (stage D) is meant for its residual stance drift.
+- **Next:** the foot weight must be much lower for 7.1M models (about 5). For the large model: 4.1 + aligned labels +
+  2.1b.2's energy loss. Evaluations must always include swing speed.

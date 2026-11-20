@@ -90,6 +90,15 @@ Models trained with this are the **4.x series**:
 The early sign is that planting the feet also raises on-beat movement: sliding becomes steps, which land on the
 beat. This still needs the full test evaluation, with and without foot locking.
 
+## Results so far (2026-11-20, test songs)
+
+- **4.1** (46.9M + fix 2) is the most balanced model so far, with no post-processing: pose FID 25.1, on-beat
+  movement 1.15, PFC 0.020, 33% of frames with no foot planted (real 40%), root jitter at real, normal stepping
+  between contacts. Foot locking hurts it (kinetic FID 23.5 → 57), so use it raw.
+- **4.2 / 4.2-allt / 4.3** (7.1M + fix 2 at weight 50) froze their feet (swing speed 0.004 vs 0.089 real, pose FID
+  78–119). The weight is too high for the small model; aligning the labels did not help.
+- Full table: [README.md](README.md#results-of-the-foot-fix-runs-2026-11-20).
+
 ## Open questions
 
 - Do 4.1 and 4.2 reduce sliding on their own (without locking) on the test songs, and at what FID cost?
