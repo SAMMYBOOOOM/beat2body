@@ -287,6 +287,12 @@ changed). Tests whether size keeps 2.1b's energy and adds 2.2's poses and body s
   (3) an energy term on the size-normalized limbs' 1-4 Hz power; then the winning loss at 46.9M. 3D (AIST++) would
   make contact physical but EDGE itself still slides in 3D, and it would drop the 2D-from-video premise.
 
+**Foot fixes (2026-11-20, `reports/2026-11-20_feet/`)**: (1) `--foot-lock` (+ `--root-smooth 1`) after sampling brings
+foot sliding to real on the test songs (PFC 0.050 -> 0.030 for 2.1b, 0.046 -> 0.023 for 2.1b.2; pose FID unchanged,
+kinetic FID +1.5 to +3). (2) Training: `--foot-contact label --foot-weight 50 --root-accel-weight 5`.
+**Naming: the 4.x series = models trained with the foot fix**: 4.1 = 2.1b.1 + foot fix (46.9M, `r41-large-6b34a851`),
+4.2 = 2.1b.2 + foot fix (7.1M, `f-gauss-4c4e192e`). Evaluate them with and without `--foot-lock --root-smooth 1`.
+
 **Guidance sweep results** (64 advanced val windows, fixed noise; nearest-centroid genre accuracy on the real
 windows 0.53):
 

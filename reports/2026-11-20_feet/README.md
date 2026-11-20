@@ -51,7 +51,12 @@ Videos: [`videos/lock_<model>_<genre>_<video>.mp4`](https://huggingface.co/Sizhe
   those frames. At weight 50 it is about 15% of the total loss.
 - A new loss matches the root's acceleration to the real one (about 5% of the total), against jitter.
 
-| Run | = | SageMaker job | Status |
+Models trained with this fix are the **4.x series**. They are evaluated with `--foot-lock --root-smooth 1` as well
+as without it.
+
+| Run | = | Size | SageMaker job (tag `run`) |
 |---|---|---|---|
-| 2.1b.4 | 2.1b + foot fix | `f-base-0691b3bd` (g6) | waiting for AWS capacity |
-| 2.1b.5 | 2.1b.2 + foot fix | `f-gauss-4c4e192e` (g5 spot) | waiting for AWS capacity |
+| 4.1 | 2.1b.1 + foot fix (old energy loss 0.25) | 46.9M | `r41-large-6b34a851` (g6) |
+| 4.2 | 2.1b.2 + foot fix (new energy loss: speed only, size-normalized, t < 500, Gaussian) | 7.1M | `f-gauss-4c4e192e` (g5 spot) |
+
+A run of 2.1b + the foot fix (`f-base-0691b3bd`) was stopped before it started, to free the g6 quota for 4.1.
