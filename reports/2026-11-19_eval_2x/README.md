@@ -17,6 +17,8 @@ All four baseline runs have finished both evaluations. See the [full benchmark t
 
 ## Decision: run 2.1b is the base model
 
+*Superseded on 2026-11-20: run 4.1 is the base model (`reports/2026-11-20_feet/README.md`).*
+
 Run 2.1b has real-dance energy (speed ~1.0–1.1, BeatPow ~1.0) with a good kinetic FID, and is the base for future
 experiments: each new variant = 2.1b's settings + one change, compared against the 2.1b rows above. Its main
 weakness is body-size variation: BoneCV 0.27 on test vs 0.17 real, 20 s torso variation 0.18 vs 0.10 real.
