@@ -151,7 +151,7 @@ def energy_loss(pa, ta, valid, w, smooth=2.0, amplitude=1.0, shape="square", sig
 
 def motion_losses(pred_n, target_n, valid, root_valid, normalizer, weights=EDGE_WEIGHTS, bone_weight=0.0,
                   sample_weight=None, energy_weight=0.0, energy_smooth=2.0, energy_mask=None, energy_opts=None,
-                  foot_contact="pred", root_accel_weight=0.0):
+                  foot_contact="pred", root_accel_weight=0.0, foot_mask=None):
     """EDGE's four losses on normalized predictions / targets (B, L, 38), plus the projected bone-length
     loss: each body bone's on-screen length vs the same bone in the real frame (relative error), so
     foreshortening in the real data is kept and no constant length is assumed. sample_weight (B,) weights
@@ -161,7 +161,9 @@ def motion_losses(pred_n, target_n, valid, root_valid, normalizer, weights=EDGE_
     foot_contact: "pred" (EDGE) = foot loss on frames the model's own contact output marks as planted, averaged over
     all frames; "label" = on frames the real dancer's ankle is planted (observed), averaged over those frames only.
     root_accel_weight: squared error of the root's acceleration vs the real one (torso lengths / frame^2), against
-    root jitter."""
+    root jitter. foot_mask (B,) selects the sequences the label foot loss and the root-acceleration loss apply to
+    (e.g. low noise levels: at high noise the x0 estimate is a blurry mean, and keeping its feet still means keeping
+    everything still)."""
     w = torch.ones(pred_n.shape[0], device=pred_n.device) if sample_weight is None else sample_weight
     m = feature_mask(valid, root_valid) * w[:, None, None]
     dw = normalizer.dim_weight
@@ -181,7 +183,8 @@ def motion_losses(pred_n, target_n, valid, root_valid, normalizer, weights=EDGE_
         static = (normalizer.denorm(target_n)[..., CONTACT] > 0.5) & ok
         static[:, :-1] &= ok[:, 1:]
         static[:, -1] = False
-        sf = static.float() * w[:, None, None]
+        fw = w if foot_mask is None else w * foot_mask.float()
+        sf = static.float() * fw[:, None, None]
         foot = ((foot_v ** 2).sum(-1) * sf).sum() / sf.sum().clamp(min=1)
     else:
         static = pred_n[..., CONTACT] > 0.95                                # (B, L, 2), model's own contact
@@ -194,7 +197,8 @@ def motion_losses(pred_n, target_n, valid, root_valid, normalizer, weights=EDGE_
     if root_accel_weight > 0:
         rp, rt = normalizer.denorm(pred_n)[..., ROOT], normalizer.denorm(target_n)[..., ROOT]
         ap, at = rp[:, 2:] - 2 * rp[:, 1:-1] + rp[:, :-2], rt[:, 2:] - 2 * rt[:, 1:-1] + rt[:, :-2]
-        mr = (root_valid[:, 2:] & root_valid[:, 1:-1] & root_valid[:, :-2]).float() * w[:, None]
+        rw = w if foot_mask is None else w * foot_mask.float()
+        mr = (root_valid[:, 2:] & root_valid[:, 1:-1] & root_valid[:, :-2]).float() * rw[:, None]
         racc = (((ap - at) ** 2).sum(-1) * mr).sum() / mr.sum().clamp(min=1)
         parts["root_acc"] = racc.item()
         total = total + root_accel_weight * racc
@@ -210,7 +214,8 @@ class EDGEDiffusion:
     def __init__(self, model, normalizer, steps=1000, music_drop=0.25, genre_drop=0.25, guidance=2.0,
                  weights=EDGE_WEIGHTS, bone_weight=0.0, min_snr=0.0, param="x0", energy_weight=0.0,
                  energy_smooth=2.0, energy_amplitude=1.0, energy_shape="square", energy_sigma=0.3,
-                 energy_size_norm=False, energy_max_t=None, foot_contact="pred", root_accel_weight=0.0):
+                 energy_size_norm=False, energy_max_t=None, foot_contact="pred", root_accel_weight=0.0,
+                 foot_max_t=None):
         assert param in ("x0", "v"), param
         self.model, self.normalizer, self.T = model, normalizer, steps
         self.param, self.energy_weight, self.energy_smooth = param, energy_weight, energy_smooth
@@ -222,6 +227,7 @@ class EDGEDiffusion:
         self.music_drop, self.genre_drop, self.guidance, self.weights = music_drop, genre_drop, guidance, weights
         self.bone_weight = bone_weight
         self.foot_contact, self.root_accel_weight = foot_contact, root_accel_weight
+        self.foot_max_t = foot_max_t      # label foot / root-acceleration losses only for t < foot_max_t
 
     def _ac(self, t, device):
         return self.ac.to(device)[t].view(-1, 1, 1)
@@ -254,7 +260,8 @@ class EDGEDiffusion:
         return motion_losses(pred, x0, valid, root_valid, self.normalizer, self.weights, self.bone_weight, sw,
                              self.energy_weight, self.energy_smooth,
                              None if self.energy_max_t is None else t < self.energy_max_t, self.energy_opts,
-                             self.foot_contact, self.root_accel_weight)
+                             self.foot_contact, self.root_accel_weight,
+                             None if self.foot_max_t is None else t < self.foot_max_t)
 
     def predict(self, x, cond, t, genre, guidance, music_guidance=None):
         """Guided x0. One weight (music_guidance None, EDGE): uncond + w (joint - uncond), where uncond drops

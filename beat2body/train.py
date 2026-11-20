@@ -154,6 +154,9 @@ def add_args(p):
                         "through `aws submit`)")
     g.add_argument("--root-accel-weight", type=float, default=0.0,
                    help="loss on the root's acceleration vs the real one (against root jitter); 0 = off")
+    g.add_argument("--foot-max-t", type=int, default=None,
+                   help="label foot loss and root-acceleration loss only at diffusion steps t < this (500 = noise "
+                        "below half the signal); default: all steps")
     g = p.add_argument_group("augmentation (train split only)")
     g.add_argument("--extra-tools", nargs="*", choices=TOOLS, default=None,
                    help="other pose tools' keypoints of the same videos as extra training views")
@@ -188,7 +191,8 @@ CFG_KEYS = ("model", "tool", "feature_set", "scale_norm", "bone_weight", "min_sn
             "layers", "heads", "dropout", "gru_hidden", "gru_layers", "diffusion_steps", "music_drop", "genre_drop",
             "guidance", "loss_weights", "normalizer", "param", "energy_weight", "energy_smooth", "beat_attn",
             "beat_bins", "beat_range", "energy_amplitude", "energy_shape", "energy_sigma", "energy_size_norm",
-            "energy_max_t", "foot_contact", "root_accel_weight")
+            "energy_max_t", "foot_contact", "root_accel_weight",
+            "foot_max_t")
 
 
 def build_model(cfg):
@@ -208,7 +212,8 @@ def make_diffusion(net, normalizer, cfg):
                          cfg.get("energy_smooth", 0.0), cfg.get("energy_amplitude", 1.0),
                          cfg.get("energy_shape", "square"), cfg.get("energy_sigma", 0.3),
                          cfg.get("energy_size_norm", False), cfg.get("energy_max_t"),
-                         cfg.get("foot_contact", "pred"), cfg.get("root_accel_weight", 0.0))
+                         cfg.get("foot_contact", "pred"), cfg.get("root_accel_weight", 0.0),
+                         cfg.get("foot_max_t"))
 
 
 class Generator:

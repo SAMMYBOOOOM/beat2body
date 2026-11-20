@@ -113,3 +113,13 @@ class _Net(torch.nn.Module):
 def test_diffusion_keeps_foot_options():
     d = EDGEDiffusion(_Net(), Normalizer(-torch.ones(38), torch.ones(38)), foot_contact="label", root_accel_weight=2.0)
     assert d.foot_contact == "label" and d.root_accel_weight == 2.0
+
+
+def test_foot_mask_limits_foot_and_root_losses_to_selected_sequences():
+    target = torch.from_numpy(_sliding())
+    target[:, 2] = 0
+    pred = target.clone()
+    pred[:, 2] = torch.linspace(0, 0.6, 60)
+    off = _losses(pred, target, foot_contact="label", root_accel_weight=1.0, foot_mask=torch.tensor([False]))
+    on = _losses(pred, target, foot_contact="label", root_accel_weight=1.0, foot_mask=torch.tensor([True]))
+    assert off["foot"] == 0 and on["foot"] > 1e-5
