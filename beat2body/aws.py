@@ -72,6 +72,9 @@ def add_args(p):
     po.add_argument("--max-hours", type=float, default=6.0)
     po.add_argument("--name", default="pose")
     po.add_argument("--only", type=int, nargs="*", default=None, help="submit only these shard numbers")
+    po.add_argument("--upload-videos", action="store_true",
+                    help="upload the local copies of the videos (<data>/raw_video/) to S3 and give them to the job "
+                         "instead of downloading from AIST inside it")
     po.add_argument("--dry-run", action="store_true")
     pd = sub.add_parser("pose-download", help="download pose jobs' raw outputs (also while they run)")
     pd.add_argument("prefixes", nargs="+", help="checkpoint prefixes printed by `aws pose`")
@@ -222,6 +225,18 @@ def pose(args):
     with open(args.videos) as f:
         ids = [x.strip() for x in f if x.strip()]
     stamp = uuid.uuid4().hex[:6]
+    inputs = []
+    if args.upload_videos:                  # local copies -> s3://<bucket>/videos/<category>/<id>.mp4 (job input)
+        from beat2body import aist
+        s3 = session.client("s3")
+        for v in ids:
+            cat = aist.GENRES[v[1:3]]
+            src = os.path.join(paths.raw_video_dir(), cat, v + ".mp4")
+            if not os.path.exists(src):
+                sys.exit(f"{src} missing; drop --upload-videos to download from AIST in the job")
+            s3.upload_file(src, bucket, f"videos/{cat}/{v}.mp4")
+        print(f"[aws] uploaded {len(ids)} videos to s3://{bucket}/videos/")
+        inputs = [("training", f"s3://{bucket}/videos/")]
     for i in range(args.shards):
         if args.only is not None and i not in args.only:
             continue
@@ -234,7 +249,7 @@ def pose(args):
         if args.dry_run:
             continue
         job = _launch(session, bucket, prefix, instance, spot, int(args.max_hours * 3600),
-                      {"task": "pose", "shard": f"{i}/{args.shards}"}, [], {"pose_videos.txt": "\n".join(ids)})
+                      {"task": "pose", "shard": f"{i}/{args.shards}"}, inputs, {"pose_videos.txt": "\n".join(ids)})
         print(f"[aws] submitted {job}")
     if args.dry_run:
         print("[aws] dry run: nothing submitted")
