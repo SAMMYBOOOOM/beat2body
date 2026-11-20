@@ -51,8 +51,9 @@ def add_args(p):
     p.add_argument("--checkpoint", required=True)
     p.add_argument("--split", default="val", choices=["val", "test"])
     p.add_argument("--guidance", type=float, default=None, help="default: the trained value")
-    from beat2body.train import add_guidance_args
+    from beat2body.train import add_guidance_args, add_postprocess_args
     add_guidance_args(p)
+    add_postprocess_args(p)
     p.add_argument("--steps", type=int, default=50, help="DDIM steps")
     p.add_argument("--eta", type=float, default=1.0, help="DDIM noise: 1 = EDGE (stochastic), 0 = deterministic")
     p.add_argument("--batch-size", type=int, default=64)
@@ -138,10 +139,10 @@ def size_variation(j):
     return {k: float(v.std() / max(v.mean(), 1e-6)) for k, v in parts}
 
 
-def long_drift(gen, bundle, split, seconds, seed, guidance=None, music_guidance=None):
+def long_drift(gen, bundle, split, seconds, seed, guidance=None, music_guidance=None, args=None):
     """Generated vs real whole-piece size variation, one video per genre (the first one at least `seconds` long)."""
     from beat2body.data import load_meta, video_motion
-    from beat2body.train import generate_long
+    from beat2body.train import generate_long, postprocess
     cfg = bundle["config"]
     rows = load_meta(cfg["tool"], split)
     length = {}
@@ -155,6 +156,7 @@ def long_drift(gen, bundle, split, seconds, seed, guidance=None, music_guidance=
     for cat, vid in sorted(vids.items()):
         motion, _, _ = generate_long(gen, bundle, vid, seconds, guidance=guidance, seed=seed,
                                      music_guidance=music_guidance)
+        motion = postprocess(motion, args)
         real, _, _ = video_motion(cfg["tool"], cat, vid, cfg.get("scale_norm", "dataset"))
         gen_v.append(size_variation(absolute_joints(motion).numpy()))
         real_v.append(size_variation(absolute_joints(torch.from_numpy(real[:len(motion)])).numpy()))
@@ -225,7 +227,8 @@ def run(args):
         out.append(gen.generate(audio[s:s + args.batch_size], genre[s:s + args.batch_size],
                                 first=gen.normalizer.norm(real_m[s:s + args.batch_size, 0].to(dev)),
                                 guidance=gw, steps=args.steps, eta=args.eta, music_guidance=mw).cpu())
-    gen_m = torch.cat(out)
+    from beat2body.train import postprocess
+    gen_m = postprocess(torch.cat(out), args)
     generated = absolute_joints(gen_m).numpy()
     static = np.repeat(real.mean((0, 1), keepdims=True), len(real), 0).repeat(real.shape[1], 1)
     static = static + 1e-4 * np.random.default_rng(0).standard_normal(static.shape)
@@ -248,9 +251,17 @@ def run(args):
     print("FID: lower = closer to real; Div: higher = more varied; BAS: higher = more on the beat;"
           " PFC: lower = less foot sliding; speed: 1 = as energetic as real;\n"
           "BeatPow: 1 = as much movement on the beat (1-4 Hz) as real; BoneCV: should match real")
+    from beat2body.data import CONTACT_THRESHOLD
+    from beat2body.model.footlock import feet_stats
+    feet = {"generated": feet_stats(generated, CONTACT_THRESHOLD), "real": feet_stats(real, CONTACT_THRESHOLD)}
+    print("\nFeet and root (torso lengths / frame): planted foot = median speed of the slower ankle;"
+          " no foot = share of frames with both ankles moving; root jitter = mean |root acceleration|")
+    print(f"{'':12s}{'planted':>9s}{'no foot':>9s}{'jitter':>9s}")
+    for name, v in feet.items():
+        print(f"{name:12s}{v['planted_foot_speed']:9.4f}{v['no_foot_planted']:9.3f}{v['root_jitter']:9.4f}")
     drift = None
     if args.long_seconds > 0:
-        g, r, n = long_drift(gen, bundle, args.split, args.long_seconds, args.seed, gw, mw)
+        g, r, n = long_drift(gen, bundle, args.split, args.long_seconds, args.seed, gw, mw, args)
         drift = {"generated": g, "real": r, "videos": n, "seconds": args.long_seconds}
         print(f"\nLong-dance drift ({n} videos x {args.long_seconds:.0f} s, variation std/mean over the piece):")
         print(f"{'':12s}{'torso':>9s}{'thigh':>9s}{'height':>9s}")
@@ -260,5 +271,6 @@ def run(args):
     path = os.path.join(os.path.dirname(os.path.abspath(args.checkpoint)), name)
     with open(path, "w") as f:
         json.dump({"split": args.split, "subset": args.subset, "windows": len(real), "guidance": gw,
-                   "music_guidance": mw, "rows": rows, "long_drift": drift}, f, indent=1)
+                   "music_guidance": mw, "rows": rows, "long_drift": drift,
+                   "feet": feet, "foot_lock": bool(args.foot_lock), "root_smooth": args.root_smooth}, f, indent=1)
     print(f"wrote {path}")

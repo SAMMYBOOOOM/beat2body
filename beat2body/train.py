@@ -145,6 +145,12 @@ def add_args(p):
     g.add_argument("--energy-max-t", type=int, default=None,
                    help="energy loss only at diffusion steps t < this (500 = noise below half the signal); "
                         "default: all steps")
+    g.add_argument("--foot-contact", choices=["pred", "label"], default="pred",
+                   help="foot-skating loss on frames where the ankle is planted according to the model's own contact "
+                        "output (pred, EDGE; averaged over all frames) or the real dancer (label; averaged over the "
+                        "planted frames). Its weight is the 4th --loss-weights value")
+    g.add_argument("--root-accel-weight", type=float, default=0.0,
+                   help="loss on the root's acceleration vs the real one (against root jitter); 0 = off")
     g = p.add_argument_group("augmentation (train split only)")
     g.add_argument("--extra-tools", nargs="*", choices=TOOLS, default=None,
                    help="other pose tools' keypoints of the same videos as extra training views")
@@ -179,7 +185,7 @@ CFG_KEYS = ("model", "tool", "feature_set", "scale_norm", "bone_weight", "min_sn
             "layers", "heads", "dropout", "gru_hidden", "gru_layers", "diffusion_steps", "music_drop", "genre_drop",
             "guidance", "loss_weights", "normalizer", "param", "energy_weight", "energy_smooth", "beat_attn",
             "beat_bins", "beat_range", "energy_amplitude", "energy_shape", "energy_sigma", "energy_size_norm",
-            "energy_max_t")
+            "energy_max_t", "foot_contact", "root_accel_weight")
 
 
 def build_model(cfg):
@@ -198,7 +204,8 @@ def make_diffusion(net, normalizer, cfg):
                          cfg.get("min_snr", 0.0), cfg.get("param", "x0"), cfg.get("energy_weight", 0.0),
                          cfg.get("energy_smooth", 0.0), cfg.get("energy_amplitude", 1.0),
                          cfg.get("energy_shape", "square"), cfg.get("energy_sigma", 0.3),
-                         cfg.get("energy_size_norm", False), cfg.get("energy_max_t"))
+                         cfg.get("energy_size_norm", False), cfg.get("energy_max_t"),
+                         cfg.get("foot_contact", "pred"), cfg.get("root_accel_weight", 0.0))
 
 
 class Generator:
@@ -516,6 +523,7 @@ def add_sample_args(p):
     p.add_argument("--seconds", type=float, default=None, help="length (default: the whole video)")
     p.add_argument("--guidance", type=float, default=None, help="guidance weight (default: the trained one)")
     add_guidance_args(p)
+    add_postprocess_args(p)
     p.add_argument("--steps", type=int, default=50)
     p.add_argument("--eta", type=float, default=1.0, help="DDIM noise: 1 = EDGE (stochastic), 0 = deterministic")
     p.add_argument("--seed", type=int, default=0)
@@ -529,6 +537,23 @@ def add_guidance_args(p):
                         "the genre weight. Default: one weight for both (EDGE)")
     p.add_argument("--genre-guidance", type=float, default=None,
                    help="separate guidance: genre weight (overrides --guidance; needs --music-guidance, else = it)")
+
+
+def add_postprocess_args(p):
+    p.add_argument("--foot-lock", action="store_true",
+                   help="post-process: pin feet the model marks as planted (root absorbs their motion, then leg IK)")
+    p.add_argument("--root-smooth", type=float, default=0.0,
+                   help="with --foot-lock: Gaussian smoothing of the root first (frames; 0 = off)")
+
+
+def postprocess(motion, args):
+    """Apply --foot-lock / --root-smooth to denormalized motion (T, 38) or (B, T, 38) torch -> torch."""
+    if not getattr(args, "foot_lock", False):
+        return motion
+    from beat2body.model.footlock import foot_lock
+    m = motion.cpu().numpy()
+    out = np.stack([foot_lock(x, root_smooth=args.root_smooth) for x in (m if m.ndim == 3 else m[None])])
+    return torch.from_numpy(out if m.ndim == 3 else out[0])
 
 
 def guidance_weights(args, default):
@@ -570,6 +595,7 @@ def run_sample(args):
     gw, mw = guidance_weights(args, bundle["config"]["guidance"])
     motion, n, seam = generate_long(gen, bundle, vid, args.seconds, genre_name, gw, args.steps, args.seed,
                                     args.eta, mw)
+    motion = postprocess(motion, args)
     T = len(motion)
     kp = motion[:, 4:].reshape(T, -1, 2)
     path = args.out or os.path.join(os.path.dirname(os.path.abspath(args.checkpoint)), "generated", f"{vid}.npz")
