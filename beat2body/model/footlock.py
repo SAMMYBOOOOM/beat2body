@@ -84,16 +84,23 @@ def foot_lock(motion, threshold=0.5, min_frames=3, blend=4, root_smooth=0.0, ik=
     ank = np.stack([rel[:, LEGS[k][2]] for k in range(2)], 1) + root[:, None]       # (T, 2, 2)
     va = ank[1:] - ank[:-1]                                                          # (T-1, 2, 2)
     wt = w[1:]                       # the step t -> t+1 is planted when contact[t+1] is (contact[t]: step t-1 -> t)
-    corr = (wt[..., None] * va).sum(1) / np.maximum(wt.sum(1), 1.0)[:, None]
+    full = wt >= 0.999                       # a fully planted foot drives the root alone (fading feet: IK below)
+    use = np.where(full.any(1, keepdims=True), full.astype(np.float32), wt)
+    corr = (use[..., None] * va).sum(1) / np.maximum(use.sum(1), 1.0)[:, None]
     root = np.concatenate([root[:1], root[0] + np.cumsum(root[1:] - root[:-1] - corr, 0)])
 
     # 3. pin what still moves with IK, toward where each contact started
     if ik:
         absj = rel + root[:, None]
         for k, (hi, ki, ai) in enumerate(LEGS):
-            for t in np.flatnonzero(w[:, k] > 0):
-                anchor = absj[start[t, k], ai]
-                goal = w[t, k] * anchor + (1 - w[t, k]) * absj[t, ai]
+            # frame weights: frame t is planted if the step into it or out of it is (contact[a] starts at the step
+            # a-1 -> a, so the foot lands at frame a-1, which is the anchor)
+            wf = np.maximum(w[:, k], np.concatenate([w[1:, k], w[-1:, k]]))
+            sf = np.where(w[:, k] >= np.concatenate([w[1:, k], w[-1:, k]]), start[:, k],
+                          np.concatenate([start[1:, k], start[-1:, k]]))
+            for t in np.flatnonzero(wf > 0):
+                anchor = absj[max(sf[t] - 1, 0), ai]
+                goal = wf[t] * anchor + (1 - wf[t]) * absj[t, ai]
                 if np.linalg.norm(goal - absj[t, ai]) < 1e-6:
                     continue
                 absj[t, ki], absj[t, ai] = two_bone_ik(absj[t, hi], absj[t, ki], absj[t, ai], goal)
@@ -103,14 +110,36 @@ def foot_lock(motion, threshold=0.5, min_frames=3, blend=4, root_smooth=0.0, ik=
     return m
 
 
-def feet_stats(j, contact_threshold):
+def feet_stats(j, contact_threshold, contact=None, min_frames=3):
     """Sliding measures of absolute joints j (N, L, 17, 2) (or (L, 17, 2)): median speed of the slower ankle,
-    share of frames with no ankle slower than the contact threshold, and root jitter (mean |root acceleration|)."""
+    share of frames with no ankle slower than the contact threshold, and root jitter (mean |root acceleration|).
+    With contact (N, L, 2) bool (contact[t]: step t-1 -> t planted; the model's output or the labels), per contact
+    run of >= min_frames: stance drift (ankle displacement from the run's first to last frame), contact duration
+    (frames), contact share, and swing speed (mean ankle speed on steps outside contact)."""
     j = np.asarray(j)
     if j.ndim == 3:
         j = j[None]
+        contact = None if contact is None else np.asarray(contact)[None]
     slow = np.linalg.norm(np.diff(j[:, :, [15, 16]], axis=1), axis=-1).min(-1)          # (N, L-1)
     pel = j[:, :, [11, 12]].mean(2)
     acc = np.linalg.norm(np.diff(pel, n=2, axis=1), axis=-1)
-    return {"planted_foot_speed": float(np.median(slow)), "no_foot_planted": float((slow > contact_threshold).mean()),
-            "root_jitter": float(acc.mean())}
+    out = {"planted_foot_speed": float(np.median(slow)), "no_foot_planted": float((slow > contact_threshold).mean()),
+           "root_jitter": float(acc.mean())}
+    if contact is not None:
+        contact = np.asarray(contact).astype(bool)
+        drift, dur, swing = [], [], []
+        for n in range(len(j)):
+            for k, ai in enumerate((15, 16)):
+                sp = np.linalg.norm(np.diff(j[n, :, ai], axis=0), axis=-1)           # step t -> t+1
+                swing.append(sp[~contact[n, 1:, k]])
+                for a, b in _runs(contact[n, :, k]):
+                    if b - a >= min_frames:
+                        s = max(a - 1, 0)                                           # contact[a]: step a-1 -> a
+                        drift.append(np.linalg.norm(j[n, b - 1, ai] - j[n, s, ai]))
+                        dur.append(b - a)
+        sw = np.concatenate(swing) if swing else np.zeros(0)
+        out.update({"stance_drift": float(np.mean(drift)) if drift else float("nan"),
+                    "contact_frames": float(np.mean(dur)) if dur else float("nan"),
+                    "contact_share": float(contact.mean()),
+                    "swing_speed": float(sw.mean()) if len(sw) else float("nan")})
+    return out

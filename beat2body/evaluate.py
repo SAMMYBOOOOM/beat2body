@@ -253,12 +253,18 @@ def run(args):
           "BeatPow: 1 = as much movement on the beat (1-4 Hz) as real; BoneCV: should match real")
     from beat2body.data import CONTACT_THRESHOLD
     from beat2body.model.footlock import feet_stats
-    feet = {"generated": feet_stats(generated, CONTACT_THRESHOLD), "real": feet_stats(real, CONTACT_THRESHOLD)}
-    print("\nFeet and root (torso lengths / frame): planted foot = median speed of the slower ankle;"
-          " no foot = share of frames with both ankles moving; root jitter = mean |root acceleration|")
-    print(f"{'':12s}{'planted':>9s}{'no foot':>9s}{'jitter':>9s}")
+    feet = {"generated": feet_stats(generated, CONTACT_THRESHOLD, (gen_m[..., CONTACT] > 0.5).numpy()),
+            "real": feet_stats(real, CONTACT_THRESHOLD, (real_m[..., CONTACT] > 0.5).numpy())}
+    print("\nFeet and root (torso lengths / frame): planted = median speed of the slower ankle; no foot = share of"
+          " frames with both ankles moving; jitter = mean |root acceleration|;\nper contact run (model output /"
+          " labels): drift = stance drift (torso lengths), frames = contact length, share = contact share,"
+          " swing = ankle speed outside contact")
+    keys = ("planted_foot_speed", "no_foot_planted", "root_jitter", "stance_drift", "contact_frames", "contact_share",
+            "swing_speed")
+    print(f"{'':12s}" + "".join(f"{h:>9s}" for h in ("planted", "no foot", "jitter", "drift", "frames", "share",
+                                                       "swing")))
     for name, v in feet.items():
-        print(f"{name:12s}{v['planted_foot_speed']:9.4f}{v['no_foot_planted']:9.3f}{v['root_jitter']:9.4f}")
+        print(f"{name:12s}" + "".join(f"{v[k]:9.4f}" for k in keys))
     drift = None
     if args.long_seconds > 0:
         g, r, n = long_drift(gen, bundle, args.split, args.long_seconds, args.seed, gw, mw, args)

@@ -169,3 +169,14 @@ def test_real_motion_has_no_foot_loss_with_aligned_labels():
     m = _step_motion()
     assert _losses(m, m, foot_contact="label")["foot"] < 1e-12
     assert _losses(m, m, foot_contact="label-prev")["foot"] > 1e-5                  # penalizes the real lift-off
+
+
+def test_feet_stats_contact_runs():
+    m = _step_motion()
+    j = absolute_joints(m).numpy()
+    s = feet_stats(j, CONTACT_THRESHOLD, m[:, :2].numpy() > 0.5)
+    assert s["stance_drift"] < 1e-6                         # the real stance does not drift
+    assert s["swing_speed"] > 0.01 and 0 < s["contact_share"] < 1
+    slid = foot_lock(m.numpy())                             # sanity: locking a still stance keeps it still
+    assert feet_stats(absolute_joints(torch.from_numpy(slid)).numpy(), CONTACT_THRESHOLD,
+                      m[:, :2].numpy() > 0.5)["stance_drift"] < 1e-5
