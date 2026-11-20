@@ -45,18 +45,24 @@ Videos: [`videos/lock_<model>_<genre>_<video>.mp4`](https://huggingface.co/Sizhe
 
 ## 2. Foot loss on the real contact labels (training)
 
-`train --foot-contact label --foot-weight 50 --root-accel-weight 5`:
+`train --foot-contact label --foot-weight 50 --root-accel-weight 5 --foot-max-t 500`:
 
 - The foot-skating loss applies on frames where the real dancer's ankle is planted (and observed), averaged over
   those frames. At weight 50 it is about 15% of the total loss.
 - A new loss matches the root's acceleration to the real one (about 5% of the total), against jitter.
+- Both apply only at low noise (t < 500). Applied at every noise level (run `4.2-allt`, job `r42-od-ddd05822`), they
+  froze the dancer early in training: at 4k steps, speed 0.13× real vs 0.50 for 2.1b.2, and on-beat movement 0.01 vs
+  0.09. At high noise the model's x0 estimate is a blurry mean, and keeping its feet still means keeping it still.
 
 Models trained with this fix are the **4.x series**. They are evaluated with `--foot-lock --root-smooth 1` as well
 as without it.
 
 | Run | = | Size | SageMaker job (tag `run`) |
 |---|---|---|---|
-| 4.1 | 2.1b.1 + foot fix (old energy loss 0.25) | 46.9M | `r41-large-6b34a851` (g6) |
-| 4.2 | 2.1b.2 + foot fix (new energy loss: speed only, size-normalized, t < 500, Gaussian) | 7.1M | `f-gauss-4c4e192e` (g5 spot) |
+| 4.1 | 2.1b.1 + foot fix (old energy loss 0.25) | 46.9M | `v41-*` (first copy to start; us-east-1 or us-west-2) |
+| 4.2 | 2.1b.2 + foot fix (new energy loss: speed only, size-normalized, t < 500, Gaussian) | 7.1M | `v42-*` (same) |
+| 4.2-allt | 4.2 with the foot losses at every noise level (comparison) | 7.1M | `r42-od-ddd05822` |
 
-A run of 2.1b + the foot fix (`f-base-0691b3bd`) was stopped before it started, to free the g6 quota for 4.1.
+Each run was submitted as several identical copies across instance types, purchase options and the two regions
+(AWS GPU capacity was short); the first copy to start training was kept and the others stopped. For a us-west-2 job,
+run the `aws` commands with `AWS_REGION=us-west-2`.

@@ -289,9 +289,11 @@ changed). Tests whether size keeps 2.1b's energy and adds 2.2's poses and body s
 
 **Foot fixes (2026-11-20, `reports/2026-11-20_feet/`)**: (1) `--foot-lock` (+ `--root-smooth 1`) after sampling brings
 foot sliding to real on the test songs (PFC 0.050 -> 0.030 for 2.1b, 0.046 -> 0.023 for 2.1b.2; pose FID unchanged,
-kinetic FID +1.5 to +3). (2) Training: `--foot-contact label --foot-weight 50 --root-accel-weight 5`.
-**Naming: the 4.x series = models trained with the foot fix**: 4.1 = 2.1b.1 + foot fix (46.9M, `r41-large-6b34a851`),
-4.2 = 2.1b.2 + foot fix (7.1M, `f-gauss-4c4e192e`). Evaluate them with and without `--foot-lock --root-smooth 1`.
+kinetic FID +1.5 to +3). (2) Training: `--foot-contact label --foot-weight 50 --root-accel-weight 5 --foot-max-t 500` (at every noise level
+the foot losses froze the dancer: run 4.2-allt).
+**Naming: the 4.x series = models trained with the foot fix**: 4.1 = 2.1b.1 + foot fix (46.9M, job `v41-*`),
+4.2 = 2.1b.2 + foot fix (7.1M, job `v42-*`); jobs may run in us-east-1 or us-west-2 (`AWS_REGION=us-west-2`; bucket,
+data and role are set up in both). Evaluate them with and without `--foot-lock --root-smooth 1`.
 
 **Guidance sweep results** (64 advanced val windows, fixed noise; nearest-centroid genre accuracy on the real
 windows 0.53):
