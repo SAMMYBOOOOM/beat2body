@@ -1,0 +1,60 @@
+{
+ "songs": {
+  "break": "gBR_sFM_c01_d04_mBR4_ch05",
+  "house": "gHO_sFM_c01_d19_mHO4_ch05",
+  "ballet_jazz": "gJB_sFM_c01_d07_mJB3_ch04",
+  "street_jazz": "gJS_sFM_c01_d01_mJS0_ch01",
+  "krump": "gKR_sFM_c01_d28_mKR5_ch06",
+  "la_hiphop": "gLH_sFM_c01_d16_mLH4_ch05",
+  "lock": "gLO_sFM_c01_d13_mLO2_ch03",
+  "middle_hiphop": "gMH_sFM_c01_d22_mMH4_ch05",
+  "pop": "gPO_sFM_c01_d10_mPO0_ch01",
+  "waack": "gWA_sFM_c01_d25_mWA5_ch06"
+ },
+ "stats": {
+  "2.1b": {
+   "real": {
+    "planted_foot_speed": 0.013933153543621301,
+    "no_foot_planted": 0.43539232053422366,
+    "root_jitter": 0.013929420849308372
+   },
+   "model": {
+    "planted_foot_speed": 0.03020862992852926,
+    "no_foot_planted": 0.7659432387312186,
+    "root_jitter": 0.02200613860040903
+   },
+   "lock": {
+    "planted_foot_speed": 0.012199906422756613,
+    "no_foot_planted": 0.44106844741235396,
+    "root_jitter": 0.02186002191156149
+   },
+   "lock_s1": {
+    "planted_foot_speed": 0.012121372518595307,
+    "no_foot_planted": 0.4395659432387312,
+    "root_jitter": 0.01880977489054203
+   }
+  },
+  "2.1b.2": {
+   "real": {
+    "planted_foot_speed": 0.013933153543621301,
+    "no_foot_planted": 0.43539232053422366,
+    "root_jitter": 0.013929420849308372
+   },
+   "model": {
+    "planted_foot_speed": 0.0215250956825912,
+    "no_foot_planted": 0.6971619365609347,
+    "root_jitter": 0.016622694302350284
+   },
+   "lock": {
+    "planted_foot_speed": 0.005059275636449456,
+    "no_foot_planted": 0.3462437395659432,
+    "root_jitter": 0.015394675638526678
+   },
+   "lock_s1": {
+    "planted_foot_speed": 0.004963202914223075,
+    "no_foot_planted": 0.34106844741235387,
+    "root_jitter": 0.013185537373647093
+   }
+  }
+ }
+}
