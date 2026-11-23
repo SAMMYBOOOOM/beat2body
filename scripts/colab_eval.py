@@ -64,12 +64,19 @@ if not os.path.exists(REPO):
     sh(["git", "sparse-checkout", "set", "--no-cone", "/*", "!/2d/raw_video/"])
 else:
     sh(["git", "pull", "-q", "--ff-only"])
-sh([sys.executable, "-m", "pip", "-q", "install", "-e", ".[train]", "huggingface_hub"])
+INSTALLED = "/content/.beat2body_installed"            # editable install: a git pull is enough afterwards
+if not os.path.exists(INSTALLED):
+    sh([sys.executable, "-m", "pip", "-q", "install", "-e", ".[train]", "huggingface_hub"])
+    open(INSTALLED, "w").close()
+else:
+    print("package already installed in this runtime", flush=True)
 
 # 2. data (public dataset)
 if not os.path.exists(os.path.join(REPO, "2d", "clips", "dwpose", "meta.csv")):
     sh([sys.executable, "-m", "beat2body", "hf", "download", "--tool", "dwpose", "--parts", "keypoints", "features",
         "meta"])
+else:
+    print("data already in this runtime", flush=True)
 
 # 3. queue
 from huggingface_hub import HfApi, hf_hub_download  # noqa: E402
@@ -85,8 +92,12 @@ print(f"\n{len(queue)} queued evaluations, {len(todo)} to run: {[e['name'] + ' '
 
 # 4. evaluate and upload
 for e in todo:
-    ck = hf_hub_download(HF_REPO, f"runs/{e['job']}/{e.get('checkpoint', 'model.pt')}", token=tok,
-                         local_dir="/content/hf")
+    rel = f"runs/{e['job']}/{e.get('checkpoint', 'model.pt')}"
+    ck = os.path.join("/content/hf", rel)
+    if os.path.exists(ck):                                  # already downloaded in this runtime
+        print(f"checkpoint already here: {ck}", flush=True)
+    else:
+        ck = hf_hub_download(HF_REPO, rel, token=tok, local_dir="/content/hf")
     log = os.path.join(os.path.dirname(ck), f"eval_test_{e['tag']}.log")
     rc = sh([sys.executable, "-m", "beat2body", "evaluate", "--checkpoint", ck, "--tag", e["tag"], *COMMON,
              *e.get("args", [])], check=False, log=log)
