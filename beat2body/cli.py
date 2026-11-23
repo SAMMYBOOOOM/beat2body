@@ -39,11 +39,12 @@ def _commands():
     # imported lazily so `--help` works without the optional dependencies of each step
     import beat2body.pose as pose_pkg
     from beat2body import render
-    from beat2body.prep import audio, audit, clean, clips, contact, frames, hf, run_all
+    from beat2body.prep import audio, audit, clean, clips, contact, floor, frames, hf, run_all
     beats = SimpleNamespace(DOC=audio.BEATS_DOC, add_args=audio.add_beats_args, run=audio.run_beats)
     edge_feats = SimpleNamespace(DOC=audio.EDGE_DOC, add_args=audio.add_edge_args, run=audio.run_edge)
     commands = {"clean": clean, "audio": audio, "beats": beats, "edge-features": edge_feats, "clips": clips,
-                "all": run_all, "frames": frames, "audit": audit, "hf": hf, "render": render, "contact": contact}
+                "all": run_all, "frames": frames, "audit": audit, "hf": hf, "render": render, "contact": contact,
+                "floor": floor}
     try:  # training commands need torch (pip install -e ".[train]")
         from beat2body import data, train
         commands["data"] = data

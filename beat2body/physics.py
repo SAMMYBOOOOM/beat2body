@@ -64,7 +64,51 @@ def local_floor(ankle_y, planted, window=None):
     return np.interp(np.arange(T), np.flatnonzero(known), y[known])
 
 
-def physics_stats(j, min_flight=6, air_margin=0.15, foot_margin=0.25, floor_window=15, contact_margin=0.05):
+def video_floor(video_id, category, tool="dwpose"):
+    """(horizon, k) of a video's floor in the training data's body units (scale_norm "dancer"), from
+    features/floor/<video>.json: floor_y(t) = horizon + k * torso(t), torso(t) = the on-screen torso length in body
+    units. None if the video has no floor fit."""
+    import json
+    import os
+
+    from beat2body import paths
+    from beat2body.data import dancer_torso
+    from beat2body.prep.floor import floor_path
+    f = floor_path(video_id)
+    if not os.path.exists(f):
+        return None
+    r = json.load(open(f))
+    if r.get("horizon_y") is None or r.get("k") is None:
+        return None
+    clean = np.load(paths.clean_keypoint_path(tool, category, video_id))
+    unit = float(clean["scale"]) * (dancer_torso(tool, video_id) or 1.0)          # body unit in pixels
+    return (r["horizon_y"] - float(clean["height"]) / 2) / unit, float(r["k"])
+
+
+def model_floor(j, horizon, k, planted=None, window=15):
+    """Floor height per frame (T,) for absolute joints j (T, 17, 2) in body units: horizon + k * body size, body size
+    = the median torso length over +/- window frames; with planted (T, 2), corrected toward the planted ankles (the
+    correction, which also absorbs the ankle's height above the sole, is interpolated between contacts)."""
+    torso = np.linalg.norm(j[:, [L_SH, R_SH]].mean(1) - j[:, [L_HIP, R_HIP]].mean(1), axis=-1)
+    T = len(j)
+    size = np.array([np.median(torso[max(0, t - window):t + window + 1]) for t in range(T)])
+    floor = horizon + k * size
+    if planted is not None and planted.any():
+        ay = j[:, [L_AN, R_AN], 1]
+        r = np.where(planted, ay - floor[:, None], np.nan)
+        rt = np.nanmean(np.where(planted, r, np.nan), 1)                          # per frame, NaN if no contact
+        known = np.isfinite(rt)
+        if known.any():
+            idx = np.flatnonzero(known)
+            corr = np.interp(np.arange(T), idx, rt[known])
+            ker = np.ones(2 * window + 1) / (2 * window + 1)                       # smooth the correction
+            corr = np.convolve(np.pad(corr, window, mode="edge"), ker, mode="valid")
+            floor = floor + corr
+    return floor
+
+
+def physics_stats(j, min_flight=6, air_margin=0.15, foot_margin=0.25, floor_window=15, contact_margin=0.05,
+                  floor_model=None, all_joints=True, acc_window=7):
     """One sequence j (T, 17, 2) -> dict of raw measures (lists, so sequences can be pooled)."""
     j = np.asarray(j, np.float64)
     T = len(j)
@@ -72,12 +116,25 @@ def physics_stats(j, min_flight=6, air_margin=0.15, foot_margin=0.25, floor_wind
     lab = contact_labels(ankles) > 0.5                          # lab[t]: the step t-1 -> t is planted
     slow = lab.copy()
     slow[:-1] |= lab[1:]                                         # frame t is slow if the step into or out of it is
-    floor = local_floor(ankles[..., 1], slow, floor_window)
+    if floor_model is None:
+        floor = local_floor(ankles[..., 1], slow, floor_window)
+    else:                                                        # (horizon, k) of the video's camera
+        near = local_floor(ankles[..., 1], slow, floor_window)[:, None] - ankles[..., 1]
+        on_floor = slow & (near <= contact_margin)
+        floor = model_floor(j, *floor_model, planted=on_floor, window=floor_window)
     planted = slow & ((floor[:, None] - ankles[..., 1]) <= contact_margin)   # slow AND on the floor
     com = centre_of_mass(j)
     above = (floor[:, None] - ankles[..., 1]) > air_margin      # image y down: above the floor = smaller y
     flight = ~slow.any(1) & above.all(1) & np.isfinite(floor)   # no slow ankle at all (a held, lifted leg is no jump)
+    if all_joints:                                              # hands, knees or head on the floor = support
+        flight &= (floor - j[..., 1].max(1)) > air_margin
+    # downward CoM acceleration on every frame (local quadratic fit over acc_window frames); the floor can only push
+    # up, so it should never exceed g by more than measurement noise
+    h = acc_window // 2
+    tt = np.arange(-h, h + 1, dtype=np.float64)
+    acc_down = [2 * np.polyfit(tt, com[i - h:i + h + 1, 1], 2)[0] for i in range(h, T - h)]
     out = {"frames": T, "flight_frames": 0, "flight_acc_y": [], "flight_acc_x": [], "flight_len": [],
+           "acc_down": acc_down,
            "penetration": [], "swing_frames": 0, "balance_out": 0, "standing_frames": 0}
     t = np.arange(T, dtype=np.float64)
     for a, b in _runs(flight):
@@ -105,8 +162,10 @@ def physics_stats(j, min_flight=6, air_margin=0.15, foot_margin=0.25, floor_wind
     return out
 
 
-def summarize(stats):
-    """Pool per-sequence dicts -> summary numbers."""
+def summarize(stats, g=0.0218):
+    """Pool per-sequence dicts -> summary numbers (g in torso lengths / frame^2, for the downward-acceleration
+    check)."""
+    ad = np.concatenate([s["acc_down"] for s in stats]) if stats else np.zeros(0)
     acc_y = np.concatenate([s["flight_acc_y"] for s in stats]) if stats else np.zeros(0)
     acc_x = np.concatenate([s["flight_acc_x"] for s in stats]) if stats else np.zeros(0)
     pen = np.concatenate([s["penetration"] for s in stats]) if stats else np.zeros(0)
@@ -120,4 +179,6 @@ def summarize(stats):
         "penetration_mean": float(pen.mean()) if len(pen) else float("nan"),
         "penetration_share": float((pen > 0.05).mean()) if len(pen) else float("nan"),
         "balance_out_share": sum(s["balance_out"] for s in stats) / max(sum(s["standing_frames"] for s in stats), 1),
+        "acc_down_p99": float(np.percentile(ad, 99)) if len(ad) else float("nan"),
+        "acc_down_over_g": float((ad > g).mean()) if len(ad) else float("nan"),
     }

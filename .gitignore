@@ -126,6 +126,8 @@ mlruns/
 2d/features/**/*.npy
 2d/features/**/*.npz
 2d/features/**/*.pkl
+2d/features/contact/
+2d/features/floor/
 
 # Sliding-window clips and their per-tool manifests — regenerable, published on Hugging Face
 2d/clips/**/*.npz

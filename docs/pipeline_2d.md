@@ -54,7 +54,22 @@ python -m beat2body pose openpose --preview 2
 python -m beat2body clean --tool dwpose                 # 4.4 (once per tool)
 python -m beat2body audio                               # 4.5 (shared by all tools)
 python -m beat2body clips --tool dwpose                 # 4.6 + 4.7 (once per tool)
+python -m beat2body contact                             # 4.8 heel / toe contact labels (DWPose raw output)
+python -m beat2body floor                               # 4.9 floor model per video (raw video + DWPose)
 ```
+
+4.8 and 4.9 need the raw DWPose output (`keypoints/<category>/<video_id>_dwpose.npz`, with the native foot points),
+so run them before `--delete-raw`. They are used by the foot-contact work (`reports/2026-11-20_feet/CONTACT_PLAN.md`)
+and the physics checks (`beat2body/physics.py`, `reports/2026-11-22_physics/`), not by training so far.
+
+- **4.8 Contact labels** → `features/contact/<video_id>.npz`: per foot and step, heel and toe planted / moving /
+  unknown (confidence < 0.6, far from the ankle, or not seen at both ends), from DWPose's heel and toe points with
+  the same cleaning and body units as the keypoints.
+- **4.9 Floor** → `features/floor/<video_id>.json`. The horizon comes from the studio's three identical tripods
+  (background = the 90th-percentile frame, so the dancer disappears; base y = horizon + c × tripod height). For
+  videos without a raw video or with fewer than two tripod depths, the dancer's median or the overall median is used.
+  The scale k comes from the dancer's planted heel / toe points (floor y = horizon + k × torso length).
+  `physics.video_floor()` converts both to body units.
 
 `all` runs 4.5 + 4.4 + 4.6/4.7 for several tools after the pose step:
 
@@ -199,6 +214,8 @@ tests/                     # pytest
 │       <tool>/normalization.json
 ├── audio/<category>/<video_id>.wav            # 4.5
 ├── features/audio_mel|audio_onset|beats/      # 4.5, shared by the three tools
+├── features/contact/<video_id>.npz            # 4.8 heel / toe contact labels (not in git; HF: SizheZ03/beat2body-runs)
+├── features/floor/<video_id>.json             # 4.9 floor model (not in git; HF: SizheZ03/beat2body-runs)
 ├── clips/<tool>/train|val|test/*.npz          # 4.6
 │   clips/<tool>/meta.csv, split.json          # 4.7
 └── categories.json                            # category -> index (section 6), tracked in git
