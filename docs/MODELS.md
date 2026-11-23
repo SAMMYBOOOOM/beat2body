@@ -113,6 +113,12 @@ python reports/2026-11-20_feet/summarize.py          # add the run to RUNS first
 
 Always check swing speed (feet must still move between contacts) and contact share, not only FID and BeatPow.
 
+**Foot lock policy (2026-11-23).** Models trained with a foot loss (4.x, 6.x) are judged on their **raw** output; the
+hard foot lock is reported but not used to pick models. On those models it mostly pushes sliding below the real
+level (frozen feet) and can damage the motion (4.1: FID_k 23.5 → 57): 4.4 28.0 → 27.3, 4.4a 27.1 → 24.9, 4.8
+25.6 → 25.5. The hard lock remains a fix for models without a foot loss (the 2.1b family). Stage D (soft lock) is kept
+only if it improves a foot-loss model's raw results without worsening any measure.
+
 Reports: [`reports/2026-11-19_eval_2x/`](../reports/2026-11-19_eval_2x/README.md) (2.x / 3.x),
 [`reports/2026-11-19_2.1b_variants/`](../reports/2026-11-19_2.1b_variants/README.md) (2.1b family, sliding analysis),
 [`reports/2026-11-20_feet/`](../reports/2026-11-20_feet/README.md) (foot fixes, 4.x, contact labels).

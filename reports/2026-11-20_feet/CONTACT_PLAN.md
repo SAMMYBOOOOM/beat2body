@@ -92,7 +92,7 @@ Beat timing is checked separately with the beat-shift probe.
 | B2 | stance labels + masks + sanity report | after B1 |
 | G | gravity loss (physics; `reports/2026-11-22_physics/`) | implemented 2026-11-23; next run |
 | C | contact head, BCE loss, label-gated penalty with stage-B labels | after the gravity run |
-| D | soft sequence lock from the head's scores | after C |
+| D | soft sequence lock from the head's scores; kept only if it improves a foot-loss model's raw results with no other measure worse (the hard lock does not: 4.1 FID_k 23.5 → 57) | after C |
 
 Dropped from the plan (2026-11-23): the lower-foot-weight and swing-loss runs, and the relocation loss (run 4.7,
 cancelled). These set the manner of motion rather than its correctness; manner is now a condition (5.x).
