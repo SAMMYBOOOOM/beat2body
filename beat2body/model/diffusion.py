@@ -181,7 +181,7 @@ def relocation_loss(pa, ta, valid, root_valid, w, span=15, shape="gaussian", sig
 def motion_losses(pred_n, target_n, valid, root_valid, normalizer, weights=EDGE_WEIGHTS, bone_weight=0.0,
                   sample_weight=None, energy_weight=0.0, energy_smooth=2.0, energy_mask=None, energy_opts=None,
                   foot_contact="pred", root_accel_weight=0.0, foot_mask=None, reloc_weight=0.0, reloc_span=15,
-                  reloc_mask=None):
+                  reloc_mask=None, gravity_weight=0.0, gravity_g=0.02, gravity_mask=None, gravity_down_weight=0.0):
     """EDGE's four losses on normalized predictions / targets (B, L, 38), plus the projected bone-length
     loss: each body bone's on-screen length vs the same bone in the real frame (relative error), so
     foreshortening in the real data is kept and no constant length is assumed. sample_weight (B,) weights
@@ -238,6 +238,12 @@ def motion_losses(pred_n, target_n, valid, root_valid, normalizer, weights=EDGE_
         racc = (((ap - at) ** 2).sum(-1) * mr).sum() / mr.sum().clamp(min=1)
         parts["root_acc"] = racc.item()
         total = total + root_accel_weight * racc
+    if gravity_weight > 0 or gravity_down_weight > 0:   # physics: physics.gravity_loss on the generated motion
+        from beat2body.physics import gravity_loss
+        gw = w if gravity_mask is None else w * gravity_mask.float()
+        g_fl, g_dn = gravity_loss(pa, valid & root_valid[..., None], gw, gravity_g)
+        parts["gravity_flight"], parts["gravity_down"] = g_fl.item(), g_dn.item()
+        total = total + gravity_weight * g_fl + gravity_down_weight * g_dn
     if reloc_weight > 0:
         rw = w if reloc_mask is None else w * reloc_mask.float()
         rel = relocation_loss(pa, ta, valid, root_valid, rw, reloc_span)
@@ -257,7 +263,7 @@ class EDGEDiffusion:
                  energy_smooth=2.0, energy_amplitude=1.0, energy_shape="square", energy_sigma=0.3,
                  energy_size_norm=False, energy_max_t=None, foot_contact="pred", root_accel_weight=0.0,
                  foot_max_t=None, reloc_weight=0.0, reloc_span=15, reloc_max_t=None, style_drop=0.25,
-                 style_stats=None):
+                 style_stats=None, gravity_weight=0.0, gravity_g=0.02, gravity_max_t=None, gravity_down_weight=0.0):
         assert param in ("x0", "v"), param
         self.model, self.normalizer, self.T = model, normalizer, steps
         self.param, self.energy_weight, self.energy_smooth = param, energy_weight, energy_smooth
@@ -272,6 +278,8 @@ class EDGEDiffusion:
         self.foot_max_t = foot_max_t      # label foot / root-acceleration losses only for t < foot_max_t
         self.reloc_weight, self.reloc_span, self.reloc_max_t = reloc_weight, reloc_span, reloc_max_t
         self.style_drop, self.style_stats = style_drop, style_stats   # manner condition (model.style_dim > 0)
+        self.gravity_weight, self.gravity_g, self.gravity_max_t = gravity_weight, gravity_g, gravity_max_t
+        self.gravity_down_weight = gravity_down_weight
 
     def _ac(self, t, device):
         return self.ac.to(device)[t].view(-1, 1, 1)
@@ -314,7 +322,9 @@ class EDGEDiffusion:
                              self.foot_contact, self.root_accel_weight,
                              None if self.foot_max_t is None else t < self.foot_max_t,
                              self.reloc_weight, self.reloc_span,
-                             None if self.reloc_max_t is None else t < self.reloc_max_t)
+                             None if self.reloc_max_t is None else t < self.reloc_max_t,
+                             self.gravity_weight, self.gravity_g,
+                             None if self.gravity_max_t is None else t < self.gravity_max_t, self.gravity_down_weight)
 
     def _model(self, x, cond, t, genre, keep, style):
         """The network with an optional style (B0, D) repeated over the batched guidance branches."""

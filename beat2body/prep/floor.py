@@ -69,10 +69,10 @@ def background(path, n=60, width=WIDTH):
     return np.percentile(fr, 90, axis=0).astype(np.uint8), (W, H)
 
 
-def tripods(bg, dark=110, min_height=40, leg=45, max_fill=0.3):
+def tripods(bg, dark=110, min_height=40, leg=45, max_fill=0.38):
     """Dark components with a camera head on top -> list of (x_head, top, base) in background pixels. A tripod is thin
-    legs under a small head; a component that fills more than max_fill of its box is solid (a dancer who stood still
-    long enough to stay in the background, as in the basic videos) and is skipped."""
+    legs under a small head (fill 0.23-0.30 of the box); one that fills more than max_fill is solid (a dancer, ~0.45,
+    who stood still long enough to stay in the background, as in the basic videos) and is skipped."""
     from scipy import ndimage
     lab, _ = ndimage.label(ndimage.binary_dilation(bg < dark, iterations=1))
     out = []

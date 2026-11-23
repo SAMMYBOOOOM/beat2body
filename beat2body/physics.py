@@ -208,3 +208,78 @@ def summarize(stats, g=0.0218):
         "acc_down_p99": float(np.percentile(ad, 99)) if len(ad) else float("nan"),
         "acc_down_over_g": float((ad > g).mean()) if len(ad) else float("nan"),
     }
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# Gravity as a training loss (torch). Uses the same definitions as the measures above, on the generated motion
+# itself; the flight mask is not differentiated (it only selects where the law applies).
+# ---------------------------------------------------------------------------------------------------------------
+def flight_mask(j, contact_threshold, air_margin=0.15, min_flight=6, floor_window=15):
+    """(B, L, 17, 2) absolute joints (body units, image y down) -> (B, L) bool: frames in flight (no slow ankle, both
+    ankles and every joint >= air_margin above the window's local floor, in runs of >= min_flight frames)."""
+    import torch
+    import torch.nn.functional as F
+    with torch.no_grad():
+        an = j[:, :, [L_AN, R_AN]]
+        sp = (an[:, 1:] - an[:, :-1]).norm(dim=-1)                                   # (B, L-1, 2)
+        sp = torch.cat([sp[:, :1], sp], 1)
+        slow = sp < contact_threshold
+        slow[:, :-1] |= slow[:, 1:].clone()
+        y = torch.where(slow, an[..., 1], torch.full_like(an[..., 1], -1e9)).amax(-1)  # (B, L) lowest planted ankle
+        floor = F.max_pool1d(y[:, None], 2 * floor_window + 1, 1, floor_window)[:, 0]
+        known = floor > -1e8
+        above = (floor[..., None] - an[..., 1]).amin(-1) > air_margin
+        clear = (floor - j[..., 1].amax(-1)) > air_margin
+        f = (~slow.any(-1) & above & clear & known).float()[:, None]
+        k = min_flight
+        core = F.avg_pool1d(F.pad(f, (k // 2, k - 1 - k // 2)), k, 1) > 0.999          # opening: drop short runs
+        f = F.max_pool1d(F.pad(core.float(), (k - 1 - k // 2, k // 2)), k, 1)[:, 0] > 0.5
+    return f
+
+
+def gravity_loss(j, valid, w, g=0.02, tol=0.25, contact_threshold=0.012, smooth=1.0):
+    """(B, L, 17, 2) absolute joints, valid (B, L, 17), w (B,) -> (flight term, downward term), both relative to g.
+
+    flight:   per jump (a flight run of >= 6 frames in which the CoM rises then falls, as in physics_stats), the
+              CoM's acceleration from a least-squares parabola over the whole jump (differentiable: a fixed matrix
+              per jump length): ((a_y - g) / g)^2 + (a_x / g)^2, averaged over jumps. This is the measure that
+              recovers g on real dancers; per-frame accelerations mostly measure tracking noise and the take-off /
+              landing impulses.
+    downward: everywhere, relu((a_y - (1 + tol) g) / g)^2 on the per-frame CoM acceleration (smoothed over
+              `smooth` frames): the floor only pushes up, so nothing accelerates the body down faster than g."""
+    import torch
+
+    from beat2body.model.diffusion import smooth_time
+    com = centre_of_mass(j)                                                            # (B, L, 2)
+    cs = smooth_time(com, smooth)
+    acc = cs[:, 2:] - 2 * cs[:, 1:-1] + cs[:, :-2]                                     # frames 1 .. L-2
+    ok = valid.all(-1)
+    okf = (ok[:, 2:] & ok[:, 1:-1] & ok[:, :-2]).float() * w[:, None]
+    e_dn = torch.relu((acc[..., 1] - (1 + tol) * g) / g) ** 2
+    down = (e_dn * okf).sum() / okf.sum().clamp(min=1)
+    fm = flight_mask(j, contact_threshold).cpu().numpy()
+    okn, yn = ok.cpu().numpy(), com[..., 1].detach().cpu().numpy()
+    terms, weights, cache = [], [], {}
+    for b in range(j.shape[0]):
+        if float(w[b]) <= 0:
+            continue
+        for a, e in _runs(fm[b]):
+            if e - a < 6 or not okn[b, a:e].all():
+                continue
+            k = int(np.argmin(yn[b, a:e]))                                             # apex: rise, then fall
+            if not 0 < k < e - a - 1:
+                continue
+            n = e - a
+            if n not in cache:                                                         # parabola coefficients
+                t = np.arange(n, dtype=np.float64) - (n - 1) / 2
+                A = np.stack([t ** 2, t, np.ones(n)], 1)
+                cache[n] = torch.as_tensor(2 * np.linalg.pinv(A)[0], dtype=j.dtype, device=j.device)   # -> 2a
+            a_y, a_x = cache[n] @ com[b, a:e, 1], cache[n] @ com[b, a:e, 0]
+            terms.append(((a_y - g) / g) ** 2 + (a_x / g) ** 2)
+            weights.append(w[b])
+    if terms:
+        tw = torch.stack(weights)
+        flight = (torch.stack(terms) * tw).sum() / tw.sum().clamp(min=1e-8)
+    else:
+        flight = com.sum() * 0
+    return flight, down

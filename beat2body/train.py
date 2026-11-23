@@ -166,6 +166,15 @@ def add_args(p):
     g.add_argument("--reloc-span", type=int, default=15, help="relocation loss span in frames (15 = 0.5 s)")
     g.add_argument("--reloc-max-t", type=int, default=None,
                    help="relocation loss only at diffusion steps t < this; default: all steps")
+    g.add_argument("--gravity-weight", type=float, default=0.0,
+                   help="physics loss (physics.gravity_loss), flight term: per jump, the centre of mass falls at g "
+                        "with no sideways acceleration (parabola over the jump); 0 = off")
+    g.add_argument("--gravity-down-weight", type=float, default=0.0,
+                   help="physics loss, downward term: the centre of mass never accelerates down faster than 1.25 g "
+                        "(the floor only pushes up); 0 = off")
+    g.add_argument("--gravity-g", type=float, default=0.02,
+                   help="g in body units (torso lengths / frame^2; real jumps measure 0.018-0.021)")
+    g.add_argument("--gravity-max-t", type=int, default=None, help="gravity loss only at diffusion steps t < this")
     g.add_argument("--style-cond", action="store_true",
                    help="condition on manner descriptors of the real window (speed, beat-band power, relocation, "
                         "contact share; model/style.py), dropped with p = --style-drop; a control at generation")
@@ -205,7 +214,8 @@ CFG_KEYS = ("model", "tool", "feature_set", "scale_norm", "bone_weight", "min_sn
             "guidance", "loss_weights", "normalizer", "param", "energy_weight", "energy_smooth", "beat_attn",
             "beat_bins", "beat_range", "energy_amplitude", "energy_shape", "energy_sigma", "energy_size_norm",
             "energy_max_t", "foot_contact", "root_accel_weight",
-            "foot_max_t", "reloc_weight", "reloc_span", "reloc_max_t", "style_cond", "style_drop", "style_stats")
+            "foot_max_t", "reloc_weight", "reloc_span", "reloc_max_t", "style_cond", "style_drop", "style_stats",
+            "gravity_weight", "gravity_g", "gravity_max_t", "gravity_down_weight")
 
 
 def style_statistics(dataset, batch_size, batches=40, seed=0):
@@ -241,7 +251,9 @@ def make_diffusion(net, normalizer, cfg):
                          cfg.get("energy_size_norm", False), cfg.get("energy_max_t"),
                          cfg.get("foot_contact", "pred"), cfg.get("root_accel_weight", 0.0),
                          cfg.get("foot_max_t"), cfg.get("reloc_weight", 0.0), cfg.get("reloc_span", 15),
-                         cfg.get("reloc_max_t"), cfg.get("style_drop", 0.25), cfg.get("style_stats"))
+                         cfg.get("reloc_max_t"), cfg.get("style_drop", 0.25), cfg.get("style_stats"),
+                         cfg.get("gravity_weight", 0.0), cfg.get("gravity_g", 0.02), cfg.get("gravity_max_t"),
+                         cfg.get("gravity_down_weight", 0.0))
 
 
 class Generator:

@@ -52,7 +52,36 @@ The stricter the detector, the closer real jumps come to g. The check is valid i
   (13–24% vs 45%). Real dance is dynamic (the CoM often leaves the support). Read with the depth caveat.
 - Jump counts on 10 songs are small (10–34); the real-dancer calibration uses 1,061 jumps.
 
-## Next: a gravity loss
+## The gravity loss (implemented 2026-11-23)
+
+`physics.gravity_loss`, `train --gravity-weight 0.1 --gravity-down-weight 10 --gravity-max-t 500`:
+
+- **Flight term.** Flight is detected on the generated motion itself (no slow ankle, both ankles and every joint
+  ≥ 0.15 above the window's floor, ≥ 6 frames, rising then falling). Per jump, a least-squares parabola over the
+  centre of mass gives its acceleration, and the term is ((a_y − g)/g)² + (a_x/g)². The parabola is a fixed matrix
+  per jump length, so it is differentiable. Per-frame accelerations did not work: they mostly measure tracking
+  noise (real dancers scored worse than the models) and the take-off and landing impulses.
+- **Downward term.** On every frame, relu((a_y − 1.25 g)/g)²: the floor only pushes up, so the body never
+  accelerates down faster than g. It needs no flight detection, so crouching and supported drops are free.
+- Inside training windows the floor comes from the planted ankles (the validated detector); the camera floor is used
+  for evaluation.
+
+On training-size windows of the 10 test songs:
+
+| | Flight term | Downward term |
+|---|---:|---:|
+| Real | 0.109 | 0.0002 |
+| 2.1b | 0.346 | 0.0015 |
+| 2.1b.2 | 0.438 | 0.0016 |
+| 4.1 | 0.089 | 0.0037 |
+| 4.4 | 0.062 | 0.0106 |
+| Real, all train/val advanced videos | 0.227 | 0.0011 |
+
+The flight term separates the floaty 2.1b models (3–4× real); 4.1 and 4.4 jump rarely (~2% of frames) and score at
+the real level. The downward term separates every model: 4.1 drops faster than g ~4× as often as real dancers, 4.4
+~10×. Weights: flight 0.1 (~10% of the loss on 4.1's training batches), downward 10 (~5%).
+
+## Earlier idea: a gravity loss
 
 In the model's own flight phases (both ankles off the floor and moving), penalize the CoM's vertical acceleration
 for deviating from g, and its horizontal acceleration for deviating from 0. The flight mask comes from the generated

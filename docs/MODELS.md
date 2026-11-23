@@ -36,6 +36,7 @@ are on Hugging Face, in [SizheZ03/beat2body-runs](https://huggingface.co/SizheZ0
 | Beat attention | `--beat-attn` | Learned cross-attention bias by beat-relative offset and beat phase. |
 | z-score / v-pred | `--normalizer zscore --param v` | Standardized features; the network predicts v instead of x0. |
 | Relocation loss | `--reloc-weight W --reloc-max-t 500` | Each ankle's and the pelvis's 0.5 s displacement vs the real window's (log ratio). Implemented, not trained: a style target, replaced by the style condition. |
+| Gravity loss | `--gravity-weight 0.1 --gravity-down-weight 10 --gravity-max-t 500` | Physics: per jump (flight detected on the generated motion), the centre of mass falls at g with no sideways acceleration (parabola over the jump); everywhere it never accelerates down faster than 1.25 g. |
 | Style condition | `--style-cond` | Manner descriptors (speed, beat-band power, relocation, contact share) of the real window as a condition, dropped with p 0.25; at generation `--style none \| genre \| real`. Replaces style-forcing losses. |
 | Foot lock | `--foot-lock --root-smooth 1` (sampling only) | Pins a foot the model marks as planted (the root absorbs its motion, leg IK) and smooths the root. Not a training change. |
 
@@ -65,10 +66,9 @@ with no foot planted, swing speed 0.089. "–" = not measured.
 | 4.2 | `v42-98ca09dc` | 7.1M | 2.1b.2 + foot fix (`label-prev`, weight 50) | 32.7 / 109.5 | 0.72 / 0.66 | 0.065 | feet frozen |
 | 4.3 | `v43-c03b2cc0` | 7.1M | 4.2 with aligned labels (`label`) | 31.5 / 118.8 | 0.74 / 0.71 | 0.068 | feet frozen |
 | 4.4 | `v44-5df86e13` | 46.9M | 4.1 + aligned labels + the new energy loss | 28.0 / 29.7 | **0.98 / 0.90** | 0.028 | real energy and contacts; slow swing (0.025) |
-| 4.6 | `v46-*` | 46.9M | 4.4 without the root-acceleration loss | training | – | – | diagnostic |
-| 4.7 | – | 46.9M | 4.4 + relocation loss | – | – | – | cancelled (style target) |
-| 4.8 | `v48-9756f3d1` | 7.1M | 4.5 without the root-acceleration loss | training | – | – | diagnostic (small models) |
-| **5.1** | `v51-*` | 46.9M | 4.4 with the energy loss replaced by the style condition | training | – | – | first of the 5.x series |
+| 4.4a | `v46-1585b336` (us-west-2) | 46.9M | 4.4 without the root-acceleration loss | trained | – | – | diagnostic (was named 4.6) |
+| 4.8 | `v48-9756f3d1` | 7.1M | 4.5 without the root-acceleration loss | trained | – | – | diagnostic (small models) |
+| **5.1** | `v51-da74960e` | 46.9M | 4.4 with the energy loss replaced by the style condition | trained | – | – | first of the 5.x series |
 | 4.5 | `v45-4c119151` | 7.1M | 4.3 with foot weight 5 | 26.0 / 113.3 | 0.72 / 0.58 | 0.055 | poses still broken (not only the weight) |
 
 2.1b.2 / 2.1b.3 / 4.2–4.5 use the new energy loss (weight 0.1). The old energy loss is weight 0.25 with
