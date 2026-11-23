@@ -10,6 +10,10 @@ Hugging Face token with write access to SizheZ03/beat2body-runs. The script:
      runs `python -m beat2body evaluate` on the held-out test songs (seed 0, 50 DDIM steps, eta 1, guidance 2,
      20 s long dances), and uploads the result JSON and the printed log next to the checkpoint
 Run the cell again whenever new entries are queued; finished entries are skipped. Nothing runs on a local machine.
+
+A runtime reset (changing the runtime type, a disconnect, the idle timeout) empties /content. So the data (one tar
+file, ~150 MB) and the downloaded checkpoints are also kept on Google Drive (MyDrive/beat2body_cache; Colab asks once
+per session for Drive access) and restored from there instead of Hugging Face. Set USE_DRIVE = False to skip Drive.
 """
 import json
 import os
@@ -20,6 +24,8 @@ REPO_URL = "https://github.com/novaz03/beat2body"
 BRANCH = "claude/relaxed-knuth-fc6tqf"
 REPO = os.environ.get("BEAT2BODY_REPO", "/content/beat2body")
 HF_REPO = "SizheZ03/beat2body-runs"
+USE_DRIVE = True
+CACHE = "/content/drive/MyDrive/beat2body_cache"
 COMMON = ["--split", "test", "--subset", "all", "--seed", "0", "--steps", "50", "--eta", "1", "--guidance", "2",
           "--batch-size", "64", "--long-seconds", "20", "--device", "cuda"]
 
@@ -71,12 +77,27 @@ if not os.path.exists(INSTALLED):
 else:
     print("package already installed in this runtime", flush=True)
 
-# 2. data (public dataset)
-if not os.path.exists(os.path.join(REPO, "2d", "clips", "dwpose", "meta.csv")):
+# 2. data (public dataset): this runtime, else the Drive copy, else Hugging Face (then saved to Drive)
+if USE_DRIVE:
+    try:
+        from google.colab import drive
+        drive.mount("/content/drive")
+        os.makedirs(CACHE, exist_ok=True)
+    except Exception as err:                                  # noqa: BLE001  (not on Colab, or access refused)
+        print("Drive not available, no cache:", err, flush=True)
+        USE_DRIVE = False
+DATA_TAR = os.path.join(CACHE, "data_dwpose.tar")
+if os.path.exists(os.path.join(REPO, "2d", "clips", "dwpose", "meta.csv")):
+    print("data already in this runtime", flush=True)
+elif USE_DRIVE and os.path.exists(DATA_TAR):
+    print("restoring the data from Drive", flush=True)
+    sh(["tar", "-xf", DATA_TAR, "-C", REPO])
+else:
     sh([sys.executable, "-m", "beat2body", "hf", "download", "--tool", "dwpose", "--parts", "keypoints", "features",
         "meta"])
-else:
-    print("data already in this runtime", flush=True)
+    if USE_DRIVE:
+        sh(["tar", "-cf", DATA_TAR, "2d/categories.json", "2d/keypoints/dwpose", "2d/features", "2d/clips/dwpose"])
+        print("saved the data to Drive:", DATA_TAR, flush=True)
 
 # 3. queue
 from huggingface_hub import HfApi, hf_hub_download  # noqa: E402
@@ -93,11 +114,12 @@ print(f"\n{len(queue)} queued evaluations, {len(todo)} to run: {[e['name'] + ' '
 # 4. evaluate and upload
 for e in todo:
     rel = f"runs/{e['job']}/{e.get('checkpoint', 'model.pt')}"
-    ck = os.path.join("/content/hf", rel)
-    if os.path.exists(ck):                                  # already downloaded in this runtime
+    root = CACHE if USE_DRIVE else "/content/hf"              # checkpoints persist on Drive across resets
+    ck = os.path.join(root, rel)
+    if os.path.exists(ck):
         print(f"checkpoint already here: {ck}", flush=True)
     else:
-        ck = hf_hub_download(HF_REPO, rel, token=tok, local_dir="/content/hf")
+        ck = hf_hub_download(HF_REPO, rel, token=tok, local_dir=root)
     log = os.path.join(os.path.dirname(ck), f"eval_test_{e['tag']}.log")
     rc = sh([sys.executable, "-m", "beat2body", "evaluate", "--checkpoint", ck, "--tag", e["tag"], *COMMON,
              *e.get("args", [])], check=False, log=log)
