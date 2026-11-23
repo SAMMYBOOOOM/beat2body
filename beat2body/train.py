@@ -146,10 +146,16 @@ def add_args(p):
     g.add_argument("--energy-max-t", type=int, default=None,
                    help="energy loss only at diffusion steps t < this (500 = noise below half the signal); "
                         "default: all steps")
-    g.add_argument("--foot-contact", choices=["pred", "label", "label-prev"], default="pred",
+    g.add_argument("--contact-head", action="store_true",
+                   help="a head on the decoder predicting heel / toe planted per foot, trained on the stance labels "
+                        "(prep/contact.py) with --contact-weight; its probabilities drive the soft foot lock")
+    g.add_argument("--contact-weight", type=float, default=0.1, help="contact-head BCE weight")
+    g.add_argument("--foot-contact", choices=["pred", "label", "label-prev", "stance"], default="pred",
                    help="foot-skating loss on frames where the ankle is planted according to the model's own contact "
                         "output (pred, EDGE; averaged over all frames) or the real dancer (label; averaged over the "
-                        "planted frames; label-prev = the first, one-step-late version used by runs 4.1 / 4.2). "
+                        "planted frames; label-prev = the first, one-step-late version used by runs 4.1 / 4.2; "
+                        "stance = the heel / toe labels: the ankle held where the real heel is planted, toe-only "
+                        "pivots and unknown steps free). "
                         "Its weight is the 4th --loss-weights value, or --foot-weight")
     g.add_argument("--foot-weight", type=float, default=None,
                    help="foot-skating loss weight (overrides the 4th --loss-weights value; one value, so it passes "
@@ -215,7 +221,13 @@ CFG_KEYS = ("model", "tool", "feature_set", "scale_norm", "bone_weight", "min_sn
             "beat_bins", "beat_range", "energy_amplitude", "energy_shape", "energy_sigma", "energy_size_norm",
             "energy_max_t", "foot_contact", "root_accel_weight",
             "foot_max_t", "reloc_weight", "reloc_span", "reloc_max_t", "style_cond", "style_drop", "style_stats",
-            "gravity_weight", "gravity_g", "gravity_max_t", "gravity_down_weight")
+            "gravity_weight", "gravity_g", "gravity_max_t", "gravity_down_weight", "contact_head", "contact_weight")
+
+
+def needs_stance(cfg):
+    """Whether training needs the heel / toe stance labels (features/contact)."""
+    get = cfg.get if isinstance(cfg, dict) else (lambda k, d=None: getattr(cfg, k, d))
+    return bool(get("contact_head", False) or get("foot_contact", "pred") == "stance")
 
 
 def style_statistics(dataset, batch_size, batches=40, seed=0):
@@ -237,7 +249,8 @@ def build_model(cfg):
         return EDGEDecoder(MOTION_DIM, cond_dim, cfg["n_genres"], cfg["seq_len"], cfg["d_model"], cfg["ff"],
                            cfg["layers"], cfg["heads"], cfg["dropout"], cfg.get("beat_attn", False),
                            cfg.get("beat_bins", 8), cfg.get("beat_range", 2.0),
-                           style_dim=STYLE_DIM if cfg.get("style_cond") else 0)
+                           style_dim=STYLE_DIM if cfg.get("style_cond") else 0,
+                           contact_head=cfg.get("contact_head", False))
     return GRUBaseline(MOTION_DIM, cond_dim, cfg["n_genres"], cfg["gru_hidden"], cfg["gru_layers"],
                        dropout=cfg["dropout"])
 
@@ -253,7 +266,7 @@ def make_diffusion(net, normalizer, cfg):
                          cfg.get("foot_max_t"), cfg.get("reloc_weight", 0.0), cfg.get("reloc_span", 15),
                          cfg.get("reloc_max_t"), cfg.get("style_drop", 0.25), cfg.get("style_stats"),
                          cfg.get("gravity_weight", 0.0), cfg.get("gravity_g", 0.02), cfg.get("gravity_max_t"),
-                         cfg.get("gravity_down_weight", 0.0))
+                         cfg.get("gravity_down_weight", 0.0), cfg.get("contact_weight", 0.0))
 
 
 class Generator:
@@ -329,12 +342,13 @@ def run(args):
     categories = aist.load_categories()
     train = DanceClips(args.tool, "train", args.seq_len, args.feature_set, stats=stats, scale_norm=args.scale_norm,
                        extra_tools=args.extra_tools, stretch=args.stretch, scale=args.jitter_scale,
-                       rotate=args.jitter_rotate, shift=args.jitter_shift)
+                       rotate=args.jitter_rotate, shift=args.jitter_shift, foot_labels=needs_stance(args))
     tools_used = sorted({t for ts in train.tools_of.values() for t in ts})
     if set(args.extra_tools) - set(tools_used):
         print(f"[train] note: no keypoints found for {sorted(set(args.extra_tools) - set(tools_used))}; "
               f"download them with `python -m beat2body hf download --tool <tool> --parts keypoints`")
-    val = DanceClips(args.tool, "val", args.seq_len, args.feature_set, stats=stats, scale_norm=args.scale_norm)
+    val = DanceClips(args.tool, "val", args.seq_len, args.feature_set, stats=stats, scale_norm=args.scale_norm,
+                     foot_labels=needs_stance(args))
     if args.max_train_clips:
         train.rows = train.rows[:args.max_train_clips]
         train.augment = False
@@ -418,7 +432,8 @@ def run(args):
         valid, root_valid = b["valid"].to(dev), b["root_valid"].to(dev)
         if args.model == "diffusion":
             d = gen.diffusion if net is model else make_diffusion(net, norm, cfg)
-            return d.loss(x0, cond, genre, valid, root_valid)
+            fs = b.get("foot_stance")
+            return d.loss(x0, cond, genre, valid, root_valid, None if fs is None else fs.to(dev))
         return gru_loss(net, x0, cond, genre, valid, root_valid, norm, bone_weight=args.bone_weight)
 
     def validate():

@@ -153,7 +153,7 @@ class EDGEDecoder(nn.Module):
     """Predicts the clean motion x0 (B, L, nfeats) from noisy motion, music, diffusion step and genre."""
 
     def __init__(self, nfeats, cond_dim, n_genres, seq_len=150, d=512, ff=1024, layers=8, heads=8, dropout=0.1,
-                 beat_attn=False, beat_bins=8, beat_range=2.0, style_dim=0):
+                 beat_attn=False, beat_bins=8, beat_range=2.0, style_dim=0, contact_head=False):
         super().__init__()
         self.n_genres, self.seq_len, self.d = n_genres, seq_len, d
         self.rotary = Rotary(d)
@@ -171,6 +171,8 @@ class EDGEDecoder(nn.Module):
         self.layers = nn.ModuleList([FiLMDecoderLayer(d, heads, ff, dropout, self.rotary) for _ in range(layers)])
         self.final_layer = nn.Linear(d, nfeats)
         self.beat_bias = BeatBias(layers, heads, beat_bins, beat_range) if beat_attn else None
+        self.contact_head = nn.Linear(d, 4) if contact_head else None   # heel / toe planted per foot (logits)
+        self.last_hidden = None
         self.style_dim = style_dim                    # manner descriptors (model/style.py) as a condition
         if style_dim:
             self.style_mlp = nn.Sequential(nn.Linear(style_dim, d), nn.SiLU(), nn.Linear(d, d))
@@ -203,4 +205,10 @@ class EDGEDecoder(nn.Module):
         biases = self.beat_bias(cond, keep_music, 3) if self.beat_bias is not None else [None] * len(self.layers)
         for layer, bias in zip(self.layers, biases):
             x = layer(x, memory, t_vec, bias)
+        if self.contact_head is not None:
+            self.last_hidden = x                      # for contact_logits(): the diffusion loss and sampling read it
         return self.final_layer(x)
+
+    def contact_logits(self, hidden=None):
+        """(B, L, 4) logits [left heel, left toe, right heel, right toe] planted, from the last forward pass."""
+        return self.contact_head(self.last_hidden if hidden is None else hidden)

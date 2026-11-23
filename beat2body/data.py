@@ -206,6 +206,18 @@ def music_input(video_id, feature_set, stats, beats=None):
 # ---------------------------------------------------------------------------
 # dataset
 # ---------------------------------------------------------------------------
+def foot_stance(video_id, T):
+    """(T, 2 feet, 2 [heel, toe]) int8 stance labels for the step t-1 -> t from features/contact/<video>.npz
+    (1 planted, 0 moving, -1 unknown); all unknown where the file or frames are missing."""
+    out = np.full((T, 2, 2), -1, np.int8)
+    f = os.path.join(paths.features_dir(), "contact", video_id + ".npz")
+    if os.path.exists(f):
+        d = np.load(f)
+        n = min(T, len(d["heel"]))
+        out[:n, :, 0], out[:n, :, 1] = d["heel"][:n], d["toe"][:n]
+    return out
+
+
 def flip_motion(motion, valid, root_valid):
     """Mirror left / right: negate x of root and joints, swap left / right joints and contacts."""
     m = motion.copy()
@@ -242,7 +254,7 @@ class DanceClips(Dataset):
 
     def __init__(self, tool="dwpose", split="train", seq_len=150, feature_set="edge", augment=None,
                  flip_prob=0.5, stats=None, scale_norm="video", extra_tools=(), stretch=0.0,
-                 scale=0.0, rotate=0.0, shift=0.0):
+                 scale=0.0, rotate=0.0, shift=0.0, foot_labels=False):
         if tool not in TOOLS or split not in SPLITS or feature_set not in FEATURE_SETS:
             raise ValueError(f"tool in {TOOLS}, split in {SPLITS}, feature_set in {list(FEATURE_SETS)}")
         self.tool, self.split, self.feature_set = tool, split, feature_set
@@ -251,6 +263,7 @@ class DanceClips(Dataset):
             raise ValueError(f"no {split} clips in {paths.meta_csv_path(tool)}")
         self.augment = (split == "train") if augment is None else augment
         self.flip_prob, self.stretch, self.scale, self.rotate, self.shift = flip_prob, stretch, scale, rotate, shift
+        self.foot_labels = foot_labels         # heel / toe stance labels (prep/contact.py) as item["foot_stance"]
         self.stats = stats or audio_stats(tool, feature_set)
         self.cats = aist.load_categories()
         shortest = min(int(r["end_frame"]) - int(r["start_frame"]) for r in self.rows)
@@ -271,6 +284,8 @@ class DanceClips(Dataset):
                     continue
                 motion, valid, root_valid = video_motion(t, r["category"], v, scale_norm)
                 self.videos[(t, v)] = {"motion": motion, "valid": valid, "root_valid": root_valid}
+                if foot_labels:
+                    self.videos[(t, v)]["stance"] = foot_stance(v, len(motion))
                 avail.append(t)
             T = min([len(audio)] + [len(self.videos[(t, v)]["motion"]) for t in avail])
             for t in avail:
@@ -319,6 +334,9 @@ class DanceClips(Dataset):
             motion[:, CONTACT] = v["motion"][near][:, CONTACT]
             audio = ((1 - w) * m["audio"][lo_i] + w * m["audio"][hi_i]).astype(np.float32)
             valid, root_valid = v["valid"][near], v["root_valid"][near]
+        stance = None
+        if self.foot_labels:
+            stance = v["stance"][np.arange(s, s + L) if src == L else near].copy()
         b = (m["beats"] - s) * (L - 1) / max(src - 1, 1)
         beats = np.zeros(L, np.float32)
         bi = np.round(b).astype(int)
@@ -327,11 +345,15 @@ class DanceClips(Dataset):
         if self.augment:
             if float(torch.rand(())) < self.flip_prob:
                 motion, valid, root_valid = flip_motion(motion, valid, root_valid)
+                if stance is not None:
+                    stance = stance[:, [1, 0]]                                     # left / right feet swap
             if self.scale or self.rotate or self.shift:
                 motion = jitter_motion(motion, self._rand(1 - self.scale, 1 + self.scale),
                                        np.deg2rad(self._rand(-self.rotate, self.rotate)),
                                        (self._rand(-self.shift, self.shift), self._rand(-self.shift, self.shift)))
+        out = {} if stance is None else {"foot_stance": torch.from_numpy(np.ascontiguousarray(stance))}
         return {
+            **out,
             "motion": torch.from_numpy(np.ascontiguousarray(motion)),
             "valid": torch.from_numpy(np.ascontiguousarray(valid)),
             "root_valid": torch.from_numpy(np.ascontiguousarray(root_valid)),

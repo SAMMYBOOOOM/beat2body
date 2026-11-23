@@ -181,7 +181,8 @@ def relocation_loss(pa, ta, valid, root_valid, w, span=15, shape="gaussian", sig
 def motion_losses(pred_n, target_n, valid, root_valid, normalizer, weights=EDGE_WEIGHTS, bone_weight=0.0,
                   sample_weight=None, energy_weight=0.0, energy_smooth=2.0, energy_mask=None, energy_opts=None,
                   foot_contact="pred", root_accel_weight=0.0, foot_mask=None, reloc_weight=0.0, reloc_span=15,
-                  reloc_mask=None, gravity_weight=0.0, gravity_g=0.02, gravity_mask=None, gravity_down_weight=0.0):
+                  reloc_mask=None, gravity_weight=0.0, gravity_g=0.02, gravity_mask=None, gravity_down_weight=0.0,
+                  foot_stance=None):
     """EDGE's four losses on normalized predictions / targets (B, L, 38), plus the projected bone-length
     loss: each body bone's on-screen length vs the same bone in the real frame (relative error), so
     foreshortening in the real data is kept and no constant length is assumed. sample_weight (B,) weights
@@ -211,7 +212,18 @@ def motion_losses(pred_n, target_n, valid, root_valid, normalizer, weights=EDGE_
     feet = pa[..., ANKLE_IDX, :]                                            # (B, L, 2, 2)
     foot_v = torch.zeros_like(feet)
     foot_v[:, :-1] = feet[:, 1:] - feet[:, :-1]
-    if foot_contact in ("label", "label-prev"):
+    if foot_contact == "stance" and foot_stance is not None:
+        # heel / toe stance labels (prep/contact.py), aligned like "label": the step t -> t+1 uses stance[t+1]. The
+        # ankle is held still where the real heel is planted (flat or heel stance); toe-only steps (pivots on the
+        # ball of the foot) and unknown steps are not penalized. The model's own contact predictions never gate this.
+        ok = valid[..., list(ANKLE_IDX)] & root_valid[..., None]
+        heel = foot_stance[..., 0] == 1                                     # (B, L, 2)
+        static = torch.zeros_like(heel)
+        static[:, :-1] = heel[:, 1:] & ok[:, :-1] & ok[:, 1:]
+        fw = w if foot_mask is None else w * foot_mask.float()
+        sf = static.float() * fw[:, None, None]
+        foot = ((foot_v ** 2).sum(-1) * sf).sum() / sf.sum().clamp(min=1)
+    elif foot_contact in ("label", "label-prev", "stance"):
         ok = valid[..., list(ANKLE_IDX)] & root_valid[..., None]            # (B, L, 2) ankle seen, root known
         lab = normalizer.denorm(target_n)[..., CONTACT] > 0.5               # lab[t]: still over t-1 -> t
         static = torch.zeros_like(lab)                                      # static[t]: step t -> t+1 planted
@@ -263,7 +275,8 @@ class EDGEDiffusion:
                  energy_smooth=2.0, energy_amplitude=1.0, energy_shape="square", energy_sigma=0.3,
                  energy_size_norm=False, energy_max_t=None, foot_contact="pred", root_accel_weight=0.0,
                  foot_max_t=None, reloc_weight=0.0, reloc_span=15, reloc_max_t=None, style_drop=0.25,
-                 style_stats=None, gravity_weight=0.0, gravity_g=0.02, gravity_max_t=None, gravity_down_weight=0.0):
+                 style_stats=None, gravity_weight=0.0, gravity_g=0.02, gravity_max_t=None, gravity_down_weight=0.0,
+                 contact_weight=0.0):
         assert param in ("x0", "v"), param
         self.model, self.normalizer, self.T = model, normalizer, steps
         self.param, self.energy_weight, self.energy_smooth = param, energy_weight, energy_smooth
@@ -280,6 +293,8 @@ class EDGEDiffusion:
         self.style_drop, self.style_stats = style_drop, style_stats   # manner condition (model.style_dim > 0)
         self.gravity_weight, self.gravity_g, self.gravity_max_t = gravity_weight, gravity_g, gravity_max_t
         self.gravity_down_weight = gravity_down_weight
+        self.contact_weight = contact_weight          # BCE of the contact head (model.contact_head) on stance labels
+        self.last_contact = None                      # (B, L, 4) contact probabilities of the last sample()
 
     def _ac(self, t, device):
         return self.ac.to(device)[t].view(-1, 1, 1)
@@ -295,7 +310,7 @@ class EDGEDiffusion:
         ac = self._ac(t, x_t.device)
         return ac.sqrt() * x_t - (1 - ac).sqrt() * out
 
-    def loss(self, x0, cond, genre, valid, root_valid):
+    def loss(self, x0, cond, genre, valid, root_valid, foot_stance=None):
         """x0 (B, L, 38) normalized motion; cond (B, L, A); genre (B,); masks (B, L, 17), (B, L)."""
         B = x0.shape[0]
         t = torch.randint(0, self.T, (B,), device=x0.device)
@@ -316,7 +331,7 @@ class EDGEDiffusion:
             ac = self.ac.to(x0.device)[t]
             sw = torch.clamp(ac / (1 - ac), max=self.min_snr)
             sw = sw / sw.mean().clamp(min=1e-8)
-        return motion_losses(pred, x0, valid, root_valid, self.normalizer, self.weights, self.bone_weight, sw,
+        total, parts = motion_losses(pred, x0, valid, root_valid, self.normalizer, self.weights, self.bone_weight, sw,
                              self.energy_weight, self.energy_smooth,
                              None if self.energy_max_t is None else t < self.energy_max_t, self.energy_opts,
                              self.foot_contact, self.root_accel_weight,
@@ -324,7 +339,21 @@ class EDGEDiffusion:
                              self.reloc_weight, self.reloc_span,
                              None if self.reloc_max_t is None else t < self.reloc_max_t,
                              self.gravity_weight, self.gravity_g,
-                             None if self.gravity_max_t is None else t < self.gravity_max_t, self.gravity_down_weight)
+                             None if self.gravity_max_t is None else t < self.gravity_max_t, self.gravity_down_weight,
+                             foot_stance)
+        head = getattr(self.model, "contact_head", None)
+        if self.contact_weight > 0 and head is not None and foot_stance is not None:
+            logits = self.model.contact_logits().float()                       # (B, L, 4)
+            target = foot_stance.reshape(B, foot_stance.shape[1], 4)
+            m = (target >= 0).float()
+            if self.foot_max_t is not None:                                     # low noise, like the foot losses
+                m = m * (t < self.foot_max_t).float()[:, None, None]
+            bce = torch.nn.functional.binary_cross_entropy_with_logits(logits, target.clamp(min=0).float(),
+                                                                       reduction="none")
+            c = (bce * m).sum() / m.sum().clamp(min=1)
+            parts["contact_bce"] = c.item()
+            total = total + self.contact_weight * c
+        return total, parts
 
     def _model(self, x, cond, t, genre, keep, style):
         """The network with an optional style (B0, D) repeated over the batched guidance branches."""
@@ -379,6 +408,8 @@ class EDGEDiffusion:
             ac = self._ac(tt, dev)
             eps = (x - ac.sqrt() * x0) / (1 - ac).sqrt().clamp(min=1e-8)
             if time_next < 0:              # last step: keep the prediction (EDGE: `x = x_start; continue`)
+                if getattr(self.model, "contact_head", None) is not None and self.model.last_hidden is not None:
+                    self.last_contact = torch.sigmoid(self.model.contact_logits(self.model.last_hidden[:B]).float())
                 x = x0
                 continue
             ac_next = self._ac(torch.full((B,), time_next, device=dev, dtype=torch.long), dev)
