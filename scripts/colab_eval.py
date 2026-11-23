@@ -47,6 +47,16 @@ def token():
         return os.environ.get("HF_TOKEN")
 
 
+# 0. a GPU runtime is required (Runtime -> Change runtime type -> GPU)
+try:
+    import torch
+    if not torch.cuda.is_available():
+        raise SystemExit("No GPU in this Colab session. Runtime -> Change runtime type -> Hardware accelerator: GPU "
+                         "-> Save, then run this cell again.")
+    print("GPU:", torch.cuda.get_device_name(0), flush=True)
+except ImportError:
+    pass
+
 # 1. code
 if not os.path.exists(REPO):
     sh(["git", "clone", "-q", "--depth", "1", "--branch", BRANCH, "--filter=blob:none", "--sparse", REPO_URL, REPO],
