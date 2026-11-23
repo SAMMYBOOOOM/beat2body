@@ -287,6 +287,16 @@ def run(args):
                                                        "swing")))
     for name, v in feet.items():
         print(f"{name:12s}" + "".join(f"{v[k]:9.4f}" for k in keys))
+    from beat2body.physics import physics_stats, summarize
+    phys = {"generated": summarize([physics_stats(x) for x in generated]),
+            "real": summarize([physics_stats(x) for x in real])}
+    print("\nPhysics (2D; g ~0.0218 torso lengths / frame^2): jumps = flights with the CoM rising then falling; "
+          "acc_y = median CoM acceleration in flight (real jumps ~g); down > g = share of frames accelerating "
+          "down faster than g")
+    print(f"{'':12s}{'jumps':>9s}{'acc_y':>9s}{'|acc_x|':>9s}{'down>g':>9s}")
+    for name, v in phys.items():
+        print(f"{name:12s}{v['flights']:9d}{v['flight_acc_y_median']:9.4f}{v['flight_acc_x_abs_median']:9.4f}"
+              f"{100 * v['acc_down_over_g']:8.2f}%")
     drift = None
     if args.long_seconds > 0:
         g, r, n = long_drift(gen, bundle, args.split, args.long_seconds, args.seed, gw, mw, args)
@@ -301,5 +311,5 @@ def run(args):
         json.dump({"split": args.split, "subset": args.subset, "windows": len(real), "guidance": gw,
                    "music_guidance": mw, "rows": rows, "long_drift": drift,
                    "feet": feet, "foot_lock": bool(args.foot_lock), "root_smooth": args.root_smooth,
-                   "style": getattr(args, "style", "none")}, f, indent=1)
+                   "style": getattr(args, "style", "none"), "physics": phys}, f, indent=1)
     print(f"wrote {path}")
