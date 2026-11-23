@@ -157,7 +157,8 @@ def long_drift(gen, bundle, split, seconds, seed, guidance=None, music_guidance=
         if length[r["video_id"]] >= seconds * 30:
             vids.setdefault(r["category"], r["video_id"])
     gen_v, real_v = [], []
-    for cat, vid in sorted(vids.items()):
+    for i, (cat, vid) in enumerate(sorted(vids.items())):
+        print(f"[evaluate] long dance {i + 1}/{len(vids)}: {vid}", flush=True)
         motion, _, _ = generate_long(gen, bundle, vid, seconds, guidance=guidance, seed=seed,
                                      music_guidance=music_guidance)
         motion = postprocess(motion, args)
@@ -244,7 +245,10 @@ def run(args):
     style = style_inputs(gen, cfg, getattr(args, "style", "none"), real_m, genre, train_m, train_genre)
     torch.manual_seed(args.seed)
     out = []
+    import time
+    t0 = time.time()
     for s in range(0, len(audio), args.batch_size):
+        print(f"[evaluate] generating test windows {s}/{len(audio)} ({time.time() - t0:.0f} s)", flush=True)
         out.append(gen.generate(audio[s:s + args.batch_size], genre[s:s + args.batch_size],
                                 first=gen.normalizer.norm(real_m[s:s + args.batch_size, 0].to(dev)),
                                 guidance=gw, steps=args.steps, eta=args.eta, music_guidance=mw,
