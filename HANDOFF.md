@@ -295,6 +295,8 @@ the foot losses froze the dancer: run 4.2-allt).
 4.2 = 2.1b.2 + foot fix (7.1M, job `v42-*`); jobs may run in us-east-1 or us-west-2 (`AWS_REGION=us-west-2`; bucket,
 data and role are set up in both). Evaluate them with and without `--foot-lock --root-smooth 1`.
 
+**Model registry: [docs/MODELS.md](docs/MODELS.md)** (every run's design, parent, test results and status).
+
 **Base model (decided 2026-11-20): run 4.1** (`v41-863026e8`, 46.9M, 2.1b.1 + foot fix; it replaces 2.1b). New
 variants = 4.1's settings + one change; use 4.1 without foot locking.
 

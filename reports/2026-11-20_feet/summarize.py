@@ -18,6 +18,8 @@ RUNS = {
     "4.2-allt": "beat2body-diffusion-r42-od-ddd05822-2026-11-20-15-54-53-814",
     "4.3": "beat2body-diffusion-v43-c03b2cc0-2026-11-20-17-51-52-776",
     "4.1": "beat2body-diffusion-v41-863026e8-2026-11-20-16-20-14-033",
+    "4.4": "beat2body-diffusion-v44-5df86e13-2026-11-20-21-00-54-698",
+    "4.5": "beat2body-diffusion-v45-4c119151-2026-11-20-23-17-08-305",
 }
 COLS = [("FID_k", "row"), ("FID_p", "row"), ("speed", "row"), ("BeatPow", "row"), ("BoneCV", "row"), ("PFC", "row"),
         ("planted_foot_speed", "feet"), ("no_foot_planted", "feet"), ("root_jitter", "feet"), ("stance_drift", "feet"),
