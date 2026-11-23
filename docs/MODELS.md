@@ -62,8 +62,8 @@ with no foot planted, swing speed 0.089. "–" = not measured.
 | 4.2-allt | `r42-od-ddd05822` | 7.1M | 2.1b.2 + foot fix (`label-prev`, weight 50) at every noise level | 28.8 / 77.9 | 0.70 / 0.58 | 0.069 | feet frozen |
 | 4.2 | `v42-98ca09dc` | 7.1M | 2.1b.2 + foot fix (`label-prev`, weight 50) | 32.7 / 109.5 | 0.72 / 0.66 | 0.065 | feet frozen |
 | 4.3 | `v43-c03b2cc0` | 7.1M | 4.2 with aligned labels (`label`) | 31.5 / 118.8 | 0.74 / 0.71 | 0.068 | feet frozen |
-| 4.4 | `v44-5df86e13` | 46.9M | 4.1 + aligned labels + the new energy loss | evaluating | – | – | trained |
-| 4.5 | `v45-4c119151` | 7.1M | 4.3 with foot weight 5 | evaluating | – | – | trained |
+| 4.4 | `v44-5df86e13` | 46.9M | 4.1 + aligned labels + the new energy loss | 28.0 / 29.7 | **0.98 / 0.90** | 0.028 | real energy and contacts; slow swing (0.025) |
+| 4.5 | `v45-4c119151` | 7.1M | 4.3 with foot weight 5 | 26.0 / 113.3 | 0.72 / 0.58 | 0.055 | poses still broken (not only the weight) |
 
 2.1b.2 / 2.1b.3 / 4.2–4.5 use the new energy loss (weight 0.1). The old energy loss is weight 0.25 with
 amplitude 1, squared, at every noise level. All 2.x–4.x runs use bone loss 1.0 and dancer scale, except the
@@ -85,7 +85,14 @@ pure-EDGE runs 2.2, 2.3 and 3.1.
   sways (only 9% of motion in the 1–4 Hz beat band, real 22%).
 - **4.x (foot fix):** at 46.9M (4.1) the model learned real-like stepping (contact share, swing speed and root
   jitter close to real; PFC halved). At 7.1M and foot weight 50 (4.2, 4.2-allt, 4.3) the feet froze (swing speed
-  0.004 vs 0.089). Aligning the labels did not change that. 4.5 tests foot weight 5.
+  0.004 vs 0.089). Aligning the labels did not change that, nor did foot weight 5 (4.5: feet move 5× more but
+  pose FID stays ~113). The small models' failure is not only the foot weight: the root-acceleration loss or the
+  label-gated foot loss itself is the next suspect.
+- **4.4 (46.9M):** the new energy loss + aligned labels give real energy (speed 0.98, BeatPow 0.90), real contact
+  length, share and stance drift, and the best body-size stability, but slow swinging feet (0.025 vs 0.089) and
+  FIDs above 4.1's. 4.1 stays the base.
+- **Physics (2D, `reports/2026-11-22_physics/`):** real jumps fall at g; every model's jumps are floaty (42–64% of
+  g). A gravity-in-flight loss is the physics-based candidate.
 
 ## How to evaluate a new run
 
