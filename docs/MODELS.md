@@ -66,8 +66,12 @@ with no foot planted, swing speed 0.089. "–" = not measured.
 | 4.2 | `v42-98ca09dc` | 7.1M | 2.1b.2 + foot fix (`label-prev`, weight 50) | 32.7 / 109.5 | 0.72 / 0.66 | 0.065 | feet frozen |
 | 4.3 | `v43-c03b2cc0` | 7.1M | 4.2 with aligned labels (`label`) | 31.5 / 118.8 | 0.74 / 0.71 | 0.068 | feet frozen |
 | 4.4 | `v44-5df86e13` | 46.9M | 4.1 + aligned labels + the new energy loss | 28.0 / 29.7 | **0.98 / 0.90** | 0.028 | real energy and contacts; slow swing (0.025) |
+| 4.4b | `v44b-*` | 46.9M | 4.4 with foot weight 10 and no root-acceleration loss | training | – | – | can the feet move naturally? |
 | 4.4a | `v46-1585b336` (us-west-2) | 46.9M | 4.4 without the root-acceleration loss | trained | – | – | diagnostic (was named 4.6) |
 | 4.8 | `v48-9756f3d1` | 7.1M | 4.5 without the root-acceleration loss | trained | – | – | diagnostic (small models) |
+| 6.1 | `v61-ca5ef8bf` | 46.9M | 4.1 + gravity loss | training | – | – | physics |
+| 6.2 | `v62-*` | 46.9M | 6.1 + stage C (contact head, stance-gated foot loss), foot weight 50 | queued | – | – | stage C |
+| 6.3 | `v63-17f1ca60` (us-west-2) | 46.9M | 6.2 with foot weight 10 | training | – | – | stage C, lighter feet |
 | **5.1** | `v51-da74960e` | 46.9M | 4.4 with the energy loss replaced by the style condition | trained | – | – | first of the 5.x series |
 | 4.5 | `v45-4c119151` | 7.1M | 4.3 with foot weight 5 | 26.0 / 113.3 | 0.72 / 0.58 | 0.055 | poses still broken (not only the weight) |
 
@@ -75,7 +79,7 @@ with no foot planted, swing speed 0.089. "–" = not measured.
 amplitude 1, squared, at every noise level. All 2.x–4.x runs use bone loss 1.0 and dancer scale, except the
 pure-EDGE runs 2.2, 2.3 and 3.1.
 
-Series: **4.x** = foot fix; **5.x** = manner (style) as a condition instead of style-forcing losses.
+Series: **4.x** = foot fix; **5.x** = manner (style) as a condition instead of style-forcing losses; **6.x** = physics (gravity) and stage C.
 
 ## Lineage and what each step taught us
 
