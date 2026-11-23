@@ -111,7 +111,8 @@ have = set(api.list_repo_files(HF_REPO))
 todo = [e for e in queue if f"runs/{e['job']}/eval_test_{e['tag']}.json" not in have]
 print(f"\n{len(queue)} queued evaluations, {len(todo)} to run: {[e['name'] + ' ' + e['tag'] for e in todo]}\n")
 
-# 4. evaluate and upload
+# 4. evaluate and upload (a failed evaluation uploads its log as eval_test_<tag>.failed.log, for diagnosis)
+ok, failed = [], []
 for e in todo:
     rel = f"runs/{e['job']}/{e.get('checkpoint', 'model.pt')}"
     root = CACHE if USE_DRIVE else "/content/hf"              # checkpoints persist on Drive across resets
@@ -125,10 +126,18 @@ for e in todo:
              *e.get("args", [])], check=False, log=log)
     out = os.path.join(os.path.dirname(ck), f"eval_test_{e['tag']}.json")
     if rc != 0 or not os.path.exists(out):
-        print(f"!! {e['name']} {e['tag']} failed (see {log}); skipping its upload", flush=True)
+        print(f"!! {e['name']} {e['tag']} failed (see {log})", flush=True)
+        failed.append(f"{e['name']} {e['tag']}")
+        try:
+            api.upload_file(path_or_fileobj=log, repo_id=HF_REPO,
+                            path_in_repo=f"runs/{e['job']}/eval_test_{e['tag']}.failed.log",
+                            commit_message=f"Failed evaluation log {e['name']} {e['tag']} (Colab)")
+        except Exception as err:                              # noqa: BLE001
+            print("   could not upload the log:", err, flush=True)
         continue
     for f in (out, log):
         api.upload_file(path_or_fileobj=f, path_in_repo=f"runs/{e['job']}/{os.path.basename(f)}", repo_id=HF_REPO,
                         commit_message=f"Evaluation {e['name']} {e['tag']} (Colab)")
     print(f"== uploaded {e['name']} {e['tag']}", flush=True)
-print("\nall queued evaluations done")
+    ok.append(f"{e['name']} {e['tag']}")
+print(f"\nfinished: {len(ok)} uploaded {ok}; {len(failed)} FAILED {failed}")
