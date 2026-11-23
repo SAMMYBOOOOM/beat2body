@@ -256,7 +256,8 @@ class EDGEDiffusion:
                  weights=EDGE_WEIGHTS, bone_weight=0.0, min_snr=0.0, param="x0", energy_weight=0.0,
                  energy_smooth=2.0, energy_amplitude=1.0, energy_shape="square", energy_sigma=0.3,
                  energy_size_norm=False, energy_max_t=None, foot_contact="pred", root_accel_weight=0.0,
-                 foot_max_t=None, reloc_weight=0.0, reloc_span=15, reloc_max_t=None):
+                 foot_max_t=None, reloc_weight=0.0, reloc_span=15, reloc_max_t=None, style_drop=0.25,
+                 style_stats=None):
         assert param in ("x0", "v"), param
         self.model, self.normalizer, self.T = model, normalizer, steps
         self.param, self.energy_weight, self.energy_smooth = param, energy_weight, energy_smooth
@@ -270,6 +271,7 @@ class EDGEDiffusion:
         self.foot_contact, self.root_accel_weight = foot_contact, root_accel_weight
         self.foot_max_t = foot_max_t      # label foot / root-acceleration losses only for t < foot_max_t
         self.reloc_weight, self.reloc_span, self.reloc_max_t = reloc_weight, reloc_span, reloc_max_t
+        self.style_drop, self.style_stats = style_drop, style_stats   # manner condition (model.style_dim > 0)
 
     def _ac(self, t, device):
         return self.ac.to(device)[t].view(-1, 1, 1)
@@ -293,7 +295,14 @@ class EDGEDiffusion:
         keep_music = torch.rand(B, device=x0.device) >= self.music_drop
         g = torch.where(torch.rand(B, device=x0.device) < self.genre_drop,
                         torch.full_like(genre, self.model.n_genres), genre)
-        pred = self.to_x0(x_t.float(), self.model(x_t, cond, t, g, keep_music).float(), t)  # float32 losses
+        style_kw = {}
+        if getattr(self.model, "style_dim", 0):
+            from beat2body.model.style import descriptors, standardize
+            with torch.no_grad():
+                desc = standardize(descriptors(self.normalizer.denorm(x0.float()), valid, root_valid),
+                                   self.style_stats)
+            style_kw = {"style": desc, "keep_style": torch.rand(B, device=x0.device) >= self.style_drop}
+        pred = self.to_x0(x_t.float(), self.model(x_t, cond, t, g, keep_music, **style_kw).float(), t)
         sw = None
         if self.min_snr > 0:    # Min-SNR-gamma (Hang et al. 2023), x0 form: weight = min(SNR, gamma)
             ac = self.ac.to(x0.device)[t]
@@ -307,7 +316,15 @@ class EDGEDiffusion:
                              self.reloc_weight, self.reloc_span,
                              None if self.reloc_max_t is None else t < self.reloc_max_t)
 
-    def predict(self, x, cond, t, genre, guidance, music_guidance=None):
+    def _model(self, x, cond, t, genre, keep, style):
+        """The network with an optional style (B0, D) repeated over the batched guidance branches."""
+        if style is None or not getattr(self.model, "style_dim", 0):
+            return self.model(x, cond, t, genre, keep)
+        reps = x.shape[0] // style.shape[0]
+        return self.model(x, cond, t, genre, keep, style.repeat(reps, 1),
+                          torch.ones(x.shape[0], dtype=torch.bool, device=x.device))
+
+    def predict(self, x, cond, t, genre, guidance, music_guidance=None, style=None):
         """Guided x0. One weight (music_guidance None, EDGE): uncond + w (joint - uncond), where uncond drops
         music and genre. Separate weights: uncond + w_genre (genre_only - uncond) + w_music (joint - genre_only)
         with w_genre = guidance, w_music = music_guidance (equal weights = the one-weight formula)."""
@@ -316,20 +333,21 @@ class EDGEDiffusion:
         no_genre = torch.full_like(genre, self.model.n_genres)
         if music_guidance is None:
             if guidance == 1.0:
-                return self.to_x0(x, self.model(x, cond, t, genre, keep), t)
-            out = self.model(torch.cat([x, x]), torch.cat([cond, cond]), torch.cat([t, t]),
-                             torch.cat([genre, no_genre]), torch.cat([keep, ~keep]))
+                return self.to_x0(x, self._model(x, cond, t, genre, keep, style), t)
+            out = self._model(torch.cat([x, x]), torch.cat([cond, cond]), torch.cat([t, t]),
+                              torch.cat([genre, no_genre]), torch.cat([keep, ~keep]), style)
             cond_out, unc = self.to_x0(torch.cat([x, x]), out, torch.cat([t, t])).split(B)
             return unc + (cond_out - unc) * guidance
-        out = self.model(torch.cat([x, x, x]), torch.cat([cond, cond, cond]), torch.cat([t, t, t]),
-                         torch.cat([genre, genre, no_genre]), torch.cat([keep, ~keep, ~keep]))
+        out = self._model(torch.cat([x, x, x]), torch.cat([cond, cond, cond]), torch.cat([t, t, t]),
+                          torch.cat([genre, genre, no_genre]), torch.cat([keep, ~keep, ~keep]), style)
         joint, genre_only, unc = self.to_x0(torch.cat([x, x, x]), out, torch.cat([t, t, t])).split(B)
         return unc + guidance * (genre_only - unc) + music_guidance * (joint - genre_only)
 
     @torch.no_grad()
     def sample(self, cond, genre, steps=50, eta=1.0, guidance=None, known=None, known_mask=None,
-               link_windows=False, generator=None, music_guidance=None):
-        """DDIM. cond (B, L, A). link_windows: the B windows are consecutive with half overlap
+               link_windows=False, generator=None, music_guidance=None, style=None):
+        """DDIM. style (B, D) standardized manner descriptors or None (the model chooses).
+        cond (B, L, A). link_windows: the B windows are consecutive with half overlap
         (EDGE's long-form sampling). known / known_mask (B, L, 38) / (B, L): inpainting.
         guidance: the one guidance weight, or the genre weight when music_guidance is given (see predict)."""
         guidance = self.guidance if guidance is None else guidance
@@ -345,7 +363,7 @@ class EDGEDiffusion:
             if known is not None:
                 x = torch.where(known_mask[..., None], self.q_sample(known, tt, torch.randn_like(known)), x)
             x0 = self.predict(x, cond, tt, genre, float(guidance * ramp[i]),
-                              None if music_guidance is None else float(music_guidance * ramp[i]))
+                              None if music_guidance is None else float(music_guidance * ramp[i]), style)
             if known is not None:
                 x0 = torch.where(known_mask[..., None], known, x0)
             ac = self._ac(tt, dev)

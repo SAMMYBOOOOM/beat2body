@@ -58,6 +58,7 @@ from beat2body.model.diffusion import (
 )
 from beat2body.model.edge import EDGEDecoder
 from beat2body.model.nets import GRUBaseline
+from beat2body.model.style import DIM as STYLE_DIM
 from beat2body.paths import TOOLS
 
 DOC = __doc__
@@ -165,6 +166,10 @@ def add_args(p):
     g.add_argument("--reloc-span", type=int, default=15, help="relocation loss span in frames (15 = 0.5 s)")
     g.add_argument("--reloc-max-t", type=int, default=None,
                    help="relocation loss only at diffusion steps t < this; default: all steps")
+    g.add_argument("--style-cond", action="store_true",
+                   help="condition on manner descriptors of the real window (speed, beat-band power, relocation, "
+                        "contact share; model/style.py), dropped with p = --style-drop; a control at generation")
+    g.add_argument("--style-drop", type=float, default=0.25)
     g = p.add_argument_group("augmentation (train split only)")
     g.add_argument("--extra-tools", nargs="*", choices=TOOLS, default=None,
                    help="other pose tools' keypoints of the same videos as extra training views")
@@ -200,7 +205,20 @@ CFG_KEYS = ("model", "tool", "feature_set", "scale_norm", "bone_weight", "min_sn
             "guidance", "loss_weights", "normalizer", "param", "energy_weight", "energy_smooth", "beat_attn",
             "beat_bins", "beat_range", "energy_amplitude", "energy_shape", "energy_sigma", "energy_size_norm",
             "energy_max_t", "foot_contact", "root_accel_weight",
-            "foot_max_t", "reloc_weight", "reloc_span", "reloc_max_t")
+            "foot_max_t", "reloc_weight", "reloc_span", "reloc_max_t", "style_cond", "style_drop", "style_stats")
+
+
+def style_statistics(dataset, batch_size, batches=40, seed=0):
+    """Mean / std of the manner descriptors over random training windows (model/style.py)."""
+    from beat2body.model.style import descriptors, fit_stats
+    g = torch.Generator().manual_seed(seed)
+    loader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=True, generator=g)
+    out = []
+    for i, b in enumerate(loader):
+        if i >= batches:
+            break
+        out.append(descriptors(b["motion"].float(), b["valid"], b["root_valid"]))
+    return fit_stats(torch.cat(out))
 
 
 def build_model(cfg):
@@ -208,7 +226,8 @@ def build_model(cfg):
     if cfg["model"] == "diffusion":
         return EDGEDecoder(MOTION_DIM, cond_dim, cfg["n_genres"], cfg["seq_len"], cfg["d_model"], cfg["ff"],
                            cfg["layers"], cfg["heads"], cfg["dropout"], cfg.get("beat_attn", False),
-                           cfg.get("beat_bins", 8), cfg.get("beat_range", 2.0))
+                           cfg.get("beat_bins", 8), cfg.get("beat_range", 2.0),
+                           style_dim=STYLE_DIM if cfg.get("style_cond") else 0)
     return GRUBaseline(MOTION_DIM, cond_dim, cfg["n_genres"], cfg["gru_hidden"], cfg["gru_layers"],
                        dropout=cfg["dropout"])
 
@@ -222,7 +241,7 @@ def make_diffusion(net, normalizer, cfg):
                          cfg.get("energy_size_norm", False), cfg.get("energy_max_t"),
                          cfg.get("foot_contact", "pred"), cfg.get("root_accel_weight", 0.0),
                          cfg.get("foot_max_t"), cfg.get("reloc_weight", 0.0), cfg.get("reloc_span", 15),
-                         cfg.get("reloc_max_t"))
+                         cfg.get("reloc_max_t"), cfg.get("style_drop", 0.25), cfg.get("style_stats"))
 
 
 class Generator:
@@ -235,12 +254,14 @@ class Generator:
 
     @torch.no_grad()
     def generate(self, cond, genre, first=None, guidance=None, steps=50, link_windows=False, generator=None,
-                 eta=1.0, music_guidance=None):
-        """guidance: one weight for music + genre; with music_guidance: guidance = the genre weight."""
+                 eta=1.0, music_guidance=None, style=None):
+        """guidance: one weight for music + genre; with music_guidance: guidance = the genre weight.
+        style: (B, D) standardized manner descriptors (style-conditioned models) or None."""
         cond, genre = cond.to(self.device), genre.to(self.device)
         if self.diffusion:
             x = self.diffusion.sample(cond, genre, steps=steps, eta=eta, guidance=guidance,
-                                      link_windows=link_windows, generator=generator, music_guidance=music_guidance)
+                                      link_windows=link_windows, generator=generator, music_guidance=music_guidance,
+                                      style=None if style is None else style.to(self.device))
         else:
             if first is None:
                 first = self.normalizer.norm((self.normalizer.lo + self.normalizer.hi) / 2).expand(len(genre), -1)
@@ -307,6 +328,7 @@ def run(args):
         train.augment = False
         val = train
     lo, hi = train.motion_range(args.normalizer)
+    args.style_stats = style_statistics(train, args.batch_size) if args.style_cond else None
     cfg = {k: getattr(args, k) for k in CFG_KEYS}
     cfg["n_genres"] = len(categories)
     model = build_model(cfg).to(dev)
@@ -587,7 +609,7 @@ def guidance_weights(args, default):
 
 
 def generate_long(gen, bundle, video_id, seconds=None, genre_name=None, guidance=None, steps=50, seed=0, eta=1.0,
-                  music_guidance=None, cond=None):
+                  music_guidance=None, cond=None, style=None):
     """EDGE long-form generation for a dataset video's music -> (motion (T, 38) denormalized, n windows,
     mean overlap disagreement before the cross-fade)."""
     cfg, cats = bundle["config"], bundle["categories"]
@@ -601,8 +623,11 @@ def generate_long(gen, bundle, video_id, seconds=None, genre_name=None, guidance
     windows = torch.stack([cond[i * half:i * half + L] for i in range(n)])
     genre = torch.full((n,), cats[genre_name or aist.GENRES[video_id[1:3]]], dtype=torch.long)
     g = torch.Generator(device=gen.device).manual_seed(seed)
+    if style is not None:
+        style = torch.as_tensor(style, dtype=torch.float32)
+        style = style.expand(n, -1) if style.dim() == 1 else style
     m = gen.generate(windows, genre, guidance=guidance, steps=steps, link_windows=n > 1, generator=g, eta=eta,
-                     music_guidance=music_guidance)
+                     music_guidance=music_guidance, style=style)
     seam = (m[1:, :half] - m[:-1, half:]).abs().mean().item() if n > 1 else 0.0
     return (EDGEDiffusion.stitch(m) if n > 1 else m[0])[:T].cpu(), n, seam
 

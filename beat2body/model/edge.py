@@ -153,7 +153,7 @@ class EDGEDecoder(nn.Module):
     """Predicts the clean motion x0 (B, L, nfeats) from noisy motion, music, diffusion step and genre."""
 
     def __init__(self, nfeats, cond_dim, n_genres, seq_len=150, d=512, ff=1024, layers=8, heads=8, dropout=0.1,
-                 beat_attn=False, beat_bins=8, beat_range=2.0):
+                 beat_attn=False, beat_bins=8, beat_range=2.0, style_dim=0):
         super().__init__()
         self.n_genres, self.seq_len, self.d = n_genres, seq_len, d
         self.rotary = Rotary(d)
@@ -171,9 +171,14 @@ class EDGEDecoder(nn.Module):
         self.layers = nn.ModuleList([FiLMDecoderLayer(d, heads, ff, dropout, self.rotary) for _ in range(layers)])
         self.final_layer = nn.Linear(d, nfeats)
         self.beat_bias = BeatBias(layers, heads, beat_bins, beat_range) if beat_attn else None
+        self.style_dim = style_dim                    # manner descriptors (model/style.py) as a condition
+        if style_dim:
+            self.style_mlp = nn.Sequential(nn.Linear(style_dim, d), nn.SiLU(), nn.Linear(d, d))
+            self.null_style = nn.Parameter(torch.zeros(1, d))
 
-    def forward(self, x, cond, t, genre, keep_music):
-        """x (B, L, nfeats), cond (B, L, cond_dim), t (B,), genre (B,) (n_genres = none), keep_music (B,) bool."""
+    def forward(self, x, cond, t, genre, keep_music, style=None, keep_style=None):
+        """x (B, L, nfeats), cond (B, L, cond_dim), t (B,), genre (B,) (n_genres = none), keep_music (B,) bool.
+        style (B, style_dim) standardized manner descriptors and keep_style (B,) bool, or None (no style)."""
         B, L, _ = x.shape
         x = self.input_projection(x)
         c = self.cond_projection(cond)
@@ -184,6 +189,14 @@ class EDGEDecoder(nn.Module):
         cond_hidden = torch.where(keep_music[:, None], cond_hidden, self.null_cond_hidden.to(c.dtype))
         t_hidden = self.time_mlp(sinusoidal(t, self.d))
         g = self.genre(genre)
+        if self.style_dim:                            # added to the genre embedding: FiLM and the genre token
+            null = self.null_style.to(g.dtype).expand(B, -1)
+            if style is None:
+                s = null
+            else:
+                s = self.style_mlp(style.to(g.dtype))
+                s = torch.where(keep_style[:, None], s, null) if keep_style is not None else s
+            g = g + s
         t_vec = self.to_time_cond(t_hidden) + cond_hidden + g
         t_tokens = self.to_time_tokens(t_hidden).view(B, 2, self.d)
         memory = self.norm_cond(torch.cat([c, t_tokens, g[:, None]], dim=-2))

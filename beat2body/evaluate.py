@@ -54,6 +54,10 @@ def add_args(p):
     from beat2body.train import add_guidance_args, add_postprocess_args
     add_guidance_args(p)
     add_postprocess_args(p)
+    p.add_argument("--style", choices=["none", "genre", "real"], default="none",
+                   help="style-conditioned models: manner descriptors to generate with: none (the model chooses), "
+                        "genre (the genre's median over training windows) or real (each real window's own; an "
+                        "upper bound and a controllability check)")
     p.add_argument("--steps", type=int, default=50, help="DDIM steps")
     p.add_argument("--eta", type=float, default=1.0, help="DDIM noise: 1 = EDGE (stochastic), 0 = deterministic")
     p.add_argument("--batch-size", type=int, default=64)
@@ -200,6 +204,22 @@ def windows(ds, n=None):
     return motion, torch.stack([x["audio"] for x in items]), torch.stack([x["category"] for x in items]), beats
 
 
+def style_inputs(gen, cfg, mode, real_m, genre, train_m, train_genre):
+    """(N, D) standardized descriptors for --style, or None."""
+    if mode == "none" or not getattr(gen.model, "style_dim", 0):
+        return None
+    from beat2body.model.style import descriptors, standardize
+
+    def desc(m):
+        v = torch.ones(m.shape[0], m.shape[1], 17, dtype=torch.bool)
+        return standardize(descriptors(m.float(), v, torch.ones(m.shape[:2], dtype=torch.bool)), cfg["style_stats"])
+    if mode == "real":
+        return desc(real_m)
+    d = desc(train_m)
+    med = {int(c): d[train_genre == c].median(0).values for c in train_genre.unique()}
+    return torch.stack([med.get(int(c), d.median(0).values) for c in genre])
+
+
 def run(args):
     from beat2body.train import load_generator
     dev = ("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu") \
@@ -216,17 +236,19 @@ def run(args):
             ds.rows = [r for r in ds.rows if f"_{tag}_" in r["video_id"]]
         return ds
     real_m, audio, genre, beats = windows(subset(DanceClips(cfg["tool"], args.split, **kw)), args.max_windows)
-    train_m, _, _, train_beats = windows(subset(DanceClips(cfg["tool"], "train", **kw)), len(real_m))
+    train_m, _, train_genre, train_beats = windows(subset(DanceClips(cfg["tool"], "train", **kw)), len(real_m))
     real = absolute_joints(real_m).numpy()
     z_k = (kinetic_features(real).mean(0), kinetic_features(real).std(0) + 1e-8)
     z_p = (pose_features(real).mean(0), pose_features(real).std(0) + 1e-8)
 
+    style = style_inputs(gen, cfg, getattr(args, "style", "none"), real_m, genre, train_m, train_genre)
     torch.manual_seed(args.seed)
     out = []
     for s in range(0, len(audio), args.batch_size):
         out.append(gen.generate(audio[s:s + args.batch_size], genre[s:s + args.batch_size],
                                 first=gen.normalizer.norm(real_m[s:s + args.batch_size, 0].to(dev)),
-                                guidance=gw, steps=args.steps, eta=args.eta, music_guidance=mw).cpu())
+                                guidance=gw, steps=args.steps, eta=args.eta, music_guidance=mw,
+                                style=None if style is None else style[s:s + args.batch_size]).cpu())
     from beat2body.train import postprocess
     gen_m = postprocess(torch.cat(out), args)
     generated = absolute_joints(gen_m).numpy()
@@ -278,5 +300,6 @@ def run(args):
     with open(path, "w") as f:
         json.dump({"split": args.split, "subset": args.subset, "windows": len(real), "guidance": gw,
                    "music_guidance": mw, "rows": rows, "long_drift": drift,
-                   "feet": feet, "foot_lock": bool(args.foot_lock), "root_smooth": args.root_smooth}, f, indent=1)
+                   "feet": feet, "foot_lock": bool(args.foot_lock), "root_smooth": args.root_smooth,
+                   "style": getattr(args, "style", "none")}, f, indent=1)
     print(f"wrote {path}")

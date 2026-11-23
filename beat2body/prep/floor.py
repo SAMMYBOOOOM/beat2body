@@ -32,6 +32,8 @@ from beat2body import paths
 
 DOC = __doc__
 WIDTH = 960                     # analysis width (the videos are 1920 x 1080)
+HORIZON_RANGE = (0.44, 0.56)    # plausible horizon, fraction of the image height (the AIST cameras: ~0.50)
+K_RANGE = (1.5, 3.5)            # plausible floor scale (camera height / torso length: ~2.4)
 
 
 def add_args(p):
@@ -67,8 +69,10 @@ def background(path, n=60, width=WIDTH):
     return np.percentile(fr, 90, axis=0).astype(np.uint8), (W, H)
 
 
-def tripods(bg, dark=110, min_height=40, leg=45):
-    """Dark components with a camera head on top -> list of (x_head, top, base) in background pixels."""
+def tripods(bg, dark=110, min_height=40, leg=45, max_fill=0.3):
+    """Dark components with a camera head on top -> list of (x_head, top, base) in background pixels. A tripod is thin
+    legs under a small head; a component that fills more than max_fill of its box is solid (a dancer who stood still
+    long enough to stay in the background, as in the basic videos) and is skipped."""
     from scipy import ndimage
     lab, _ = ndimage.label(ndimage.binary_dilation(bg < dark, iterations=1))
     out = []
@@ -76,6 +80,9 @@ def tripods(bg, dark=110, min_height=40, leg=45):
         ys, xs = np.nonzero(lab[sl] == i)
         ys, xs = ys + sl[0].start, xs + sl[1].start
         if ys.max() - ys.min() < min_height:
+            continue
+        box = (ys.max() - ys.min() + 1) * (xs.max() - xs.min() + 1)
+        if len(ys) / box > max_fill:
             continue
         top = ys.min()
         hx = xs[ys < top + 10].mean()
@@ -157,8 +164,9 @@ def run(args):
     recs = {}
     for f in glob.glob(os.path.join(paths.features_dir(), "floor", "*.json")):
         r = json.load(open(f))
-        if r.get("tripod_horizon_y") is not None:
-            recs[r["video_id"]] = r["tripod_horizon_y"]
+        h = r.get("tripod_horizon_y")
+        if h is not None and HORIZON_RANGE[0] <= h / r["height"] <= HORIZON_RANGE[1]:   # plausible only
+            recs[r["video_id"]] = h
     by_dancer = {}
     for v, h in recs.items():
         by_dancer.setdefault(aist.dancer_id(v), []).append(h)
@@ -180,6 +188,7 @@ def run(args):
             d = dancer_fit(vid, cat, h)
             if d:
                 rec.update(d)
+                rec["k_ok"] = bool(K_RANGE[0] <= d["k"] <= K_RANGE[1])
         with open(floor_path(vid), "w") as fh:
             json.dump(rec, fh, indent=1)
         n += 1

@@ -80,9 +80,35 @@ def video_floor(video_id, category, tool="dwpose"):
     r = json.load(open(f))
     if r.get("horizon_y") is None or r.get("k") is None:
         return None
+    k = float(r["k"])
+    if not r.get("k_ok", True):                     # implausible own fit: the dancer's typical k
+        k = _dancer_k(video_id)
+        if k is None:
+            return None
     clean = np.load(paths.clean_keypoint_path(tool, category, video_id))
     unit = float(clean["scale"]) * (dancer_torso(tool, video_id) or 1.0)          # body unit in pixels
-    return (r["horizon_y"] - float(clean["height"]) / 2) / unit, float(r["k"])
+    return (r["horizon_y"] - float(clean["height"]) / 2) / unit, k
+
+
+_DANCER_K = {}
+
+
+def _dancer_k(video_id):
+    """Median plausible k over the dancer's videos (cached)."""
+    import glob
+    import json
+    import os
+
+    from beat2body import aist, paths
+    d = aist.dancer_id(video_id)
+    if d not in _DANCER_K:
+        ks = []
+        for f in glob.glob(os.path.join(paths.features_dir(), "floor", "*.json")):
+            r = json.load(open(f))
+            if aist.dancer_id(r["video_id"]) == d and r.get("k_ok") and r.get("k") is not None:
+                ks.append(r["k"])
+        _DANCER_K[d] = float(np.median(ks)) if ks else None
+    return _DANCER_K[d]
 
 
 def model_floor(j, horizon, k, planted=None, window=15):
