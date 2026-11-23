@@ -158,6 +158,13 @@ def add_args(p):
     g.add_argument("--foot-max-t", type=int, default=None,
                    help="label foot loss and root-acceleration loss only at diffusion steps t < this (500 = noise "
                         "below half the signal); default: all steps")
+    g.add_argument("--reloc-weight", type=float, default=0.0,
+                   help="relocation loss: each ankle's and the pelvis's displacement over --reloc-span frames "
+                        "matches the real window's (log ratio, phase-invariant; steps that change place, not "
+                        "tapping in place); 0 = off")
+    g.add_argument("--reloc-span", type=int, default=15, help="relocation loss span in frames (15 = 0.5 s)")
+    g.add_argument("--reloc-max-t", type=int, default=None,
+                   help="relocation loss only at diffusion steps t < this; default: all steps")
     g = p.add_argument_group("augmentation (train split only)")
     g.add_argument("--extra-tools", nargs="*", choices=TOOLS, default=None,
                    help="other pose tools' keypoints of the same videos as extra training views")
@@ -193,7 +200,7 @@ CFG_KEYS = ("model", "tool", "feature_set", "scale_norm", "bone_weight", "min_sn
             "guidance", "loss_weights", "normalizer", "param", "energy_weight", "energy_smooth", "beat_attn",
             "beat_bins", "beat_range", "energy_amplitude", "energy_shape", "energy_sigma", "energy_size_norm",
             "energy_max_t", "foot_contact", "root_accel_weight",
-            "foot_max_t")
+            "foot_max_t", "reloc_weight", "reloc_span", "reloc_max_t")
 
 
 def build_model(cfg):
@@ -214,7 +221,8 @@ def make_diffusion(net, normalizer, cfg):
                          cfg.get("energy_shape", "square"), cfg.get("energy_sigma", 0.3),
                          cfg.get("energy_size_norm", False), cfg.get("energy_max_t"),
                          cfg.get("foot_contact", "pred"), cfg.get("root_accel_weight", 0.0),
-                         cfg.get("foot_max_t"))
+                         cfg.get("foot_max_t"), cfg.get("reloc_weight", 0.0), cfg.get("reloc_span", 15),
+                         cfg.get("reloc_max_t"))
 
 
 class Generator:

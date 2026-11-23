@@ -149,9 +149,39 @@ def energy_loss(pa, ta, valid, w, smooth=2.0, amplitude=1.0, shape="square", sig
     return (e * present).sum() / present.sum().clamp(min=1e-8)
 
 
+RELOC_POINTS = ((15,), (16,), (11, 12))          # left ankle, right ankle, pelvis (mid-hip)
+
+
+def relocation_loss(pa, ta, valid, root_valid, w, span=15, shape="gaussian", sigma=0.3, size_norm=True, eps=0.02):
+    """Phase-invariant "do the feet and the body change place": per window and point (each ankle, the pelvis), the
+    log ratio of the mean displacement over `span` frames, |x[t + span] - x[t]|, to the real window's. Tapping in
+    place (the foot comes back down where it left) scores ~0; stepping to a new place scores high. Like the energy
+    loss, it does not ask for the real timing, only for as much relocation. shape / sigma / size_norm: as
+    energy_loss. (B,) weights w."""
+    if size_norm:
+        pa, ta = size_normalized(pa, valid), size_normalized(ta, valid)
+    L = pa.shape[1]
+    if L <= span:
+        return pa.new_zeros(())
+    terms, present = [], []
+    for pts in RELOC_POINTS:
+        idx = list(pts)
+        p, t = pa[:, :, idx].mean(2), ta[:, :, idx].mean(2)                     # (B, L, 2)
+        ok = valid[:, :, idx].all(-1) & root_valid                                # (B, L)
+        m = (ok[:, span:] & ok[:, :-span]).float()
+        dp = _masked_mean((p[:, span:] - p[:, :-span]).norm(dim=-1), m, 1)        # (B,)
+        dt = _masked_mean((t[:, span:] - t[:, :-span]).norm(dim=-1), m, 1)
+        d2 = (torch.log(dp + eps) - torch.log(dt + eps)) ** 2
+        terms.append(d2 if shape == "square" else 2 * sigma ** 2 * (1 - torch.exp(-d2 / (2 * sigma ** 2))))
+        present.append((m.sum(1) >= 10).float())
+    e, pr = torch.stack(terms, 1), torch.stack(present, 1) * w[:, None]          # (B, 3)
+    return (e * pr).sum() / pr.sum().clamp(min=1e-8)
+
+
 def motion_losses(pred_n, target_n, valid, root_valid, normalizer, weights=EDGE_WEIGHTS, bone_weight=0.0,
                   sample_weight=None, energy_weight=0.0, energy_smooth=2.0, energy_mask=None, energy_opts=None,
-                  foot_contact="pred", root_accel_weight=0.0, foot_mask=None):
+                  foot_contact="pred", root_accel_weight=0.0, foot_mask=None, reloc_weight=0.0, reloc_span=15,
+                  reloc_mask=None):
     """EDGE's four losses on normalized predictions / targets (B, L, 38), plus the projected bone-length
     loss: each body bone's on-screen length vs the same bone in the real frame (relative error), so
     foreshortening in the real data is kept and no constant length is assumed. sample_weight (B,) weights
@@ -162,7 +192,9 @@ def motion_losses(pred_n, target_n, valid, root_valid, normalizer, weights=EDGE_
     all frames; "label" = on the steps t -> t+1 where the real dancer's ankle is planted (contact[t+1]; observed at
     both ends), averaged over those steps only; "label-prev" = the first version (contact[t], one step late).
     root_accel_weight: squared error of the root's acceleration vs the real one (torso lengths / frame^2), against
-    root jitter. foot_mask (B,) selects the sequences the label foot loss and the root-acceleration loss apply to
+    root jitter. reloc_weight / reloc_span: relocation_loss (feet and body change place as much as the real
+    window), on the sequences reloc_mask (B,) selects (e.g. low noise). foot_mask (B,) selects the sequences the
+    label foot loss and the root-acceleration loss apply to
     (e.g. low noise levels: at high noise the x0 estimate is a blurry mean, and keeping its feet still means keeping
     everything still)."""
     w = torch.ones(pred_n.shape[0], device=pred_n.device) if sample_weight is None else sample_weight
@@ -206,6 +238,11 @@ def motion_losses(pred_n, target_n, valid, root_valid, normalizer, weights=EDGE_
         racc = (((ap - at) ** 2).sum(-1) * mr).sum() / mr.sum().clamp(min=1)
         parts["root_acc"] = racc.item()
         total = total + root_accel_weight * racc
+    if reloc_weight > 0:
+        rw = w if reloc_mask is None else w * reloc_mask.float()
+        rel = relocation_loss(pa, ta, valid, root_valid, rw, reloc_span)
+        parts["reloc"] = rel.item()
+        total = total + reloc_weight * rel
     if energy_weight > 0:
         ew = w if energy_mask is None else w * energy_mask.float()
         energy = energy_loss(pa, ta, valid & root_valid[..., None], ew, energy_smooth, **(energy_opts or {}))
@@ -219,7 +256,7 @@ class EDGEDiffusion:
                  weights=EDGE_WEIGHTS, bone_weight=0.0, min_snr=0.0, param="x0", energy_weight=0.0,
                  energy_smooth=2.0, energy_amplitude=1.0, energy_shape="square", energy_sigma=0.3,
                  energy_size_norm=False, energy_max_t=None, foot_contact="pred", root_accel_weight=0.0,
-                 foot_max_t=None):
+                 foot_max_t=None, reloc_weight=0.0, reloc_span=15, reloc_max_t=None):
         assert param in ("x0", "v"), param
         self.model, self.normalizer, self.T = model, normalizer, steps
         self.param, self.energy_weight, self.energy_smooth = param, energy_weight, energy_smooth
@@ -232,6 +269,7 @@ class EDGEDiffusion:
         self.bone_weight = bone_weight
         self.foot_contact, self.root_accel_weight = foot_contact, root_accel_weight
         self.foot_max_t = foot_max_t      # label foot / root-acceleration losses only for t < foot_max_t
+        self.reloc_weight, self.reloc_span, self.reloc_max_t = reloc_weight, reloc_span, reloc_max_t
 
     def _ac(self, t, device):
         return self.ac.to(device)[t].view(-1, 1, 1)
@@ -265,7 +303,9 @@ class EDGEDiffusion:
                              self.energy_weight, self.energy_smooth,
                              None if self.energy_max_t is None else t < self.energy_max_t, self.energy_opts,
                              self.foot_contact, self.root_accel_weight,
-                             None if self.foot_max_t is None else t < self.foot_max_t)
+                             None if self.foot_max_t is None else t < self.foot_max_t,
+                             self.reloc_weight, self.reloc_span,
+                             None if self.reloc_max_t is None else t < self.reloc_max_t)
 
     def predict(self, x, cond, t, genre, guidance, music_guidance=None):
         """Guided x0. One weight (music_guidance None, EDGE): uncond + w (joint - uncond), where uncond drops
