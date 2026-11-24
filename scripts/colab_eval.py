@@ -28,6 +28,8 @@ REPO = os.environ.get("BEAT2BODY_REPO", "/content/beat2body")
 HF_REPO = "SizheZ03/beat2body-runs"
 USE_DRIVE = True
 CACHE = "/content/drive/MyDrive/beat2body_cache"
+WORKER = ""            # your name (e.g. "alice"): marks the entries you are running, so teammates skip them
+CLAIM_HOURS = 3        # a claim older than this (a crashed or closed session) is taken over by the next person
 COMMON = ["--split", "test", "--subset", "all", "--seed", "0", "--steps", "50", "--eta", "1", "--guidance", "2",
           "--batch-size", "64", "--long-seconds", "20", "--device", "cuda"]
 
@@ -112,7 +114,43 @@ api = HfApi(token=tok)
 if not os.path.isdir(os.path.join(REPO, "2d", "features", "contact")):
     from huggingface_hub import snapshot_download  # noqa: E402
     snapshot_download(HF_REPO, allow_patterns=["2d/features/contact/*"], token=tok, local_dir=REPO)
-queue =json.load(open(hf_hub_download(HF_REPO, "evals/queue.json", token=tok, force_download=True)))
+import time  # noqa: E402
+import uuid  # noqa: E402
+
+ME = (WORKER or os.environ.get("BEAT2BODY_WORKER") or "unnamed") + "-" + uuid.uuid4().hex[:4]
+
+
+def claim(path):
+    """Several people can run this cell at once: before starting an entry, write <path> = {worker, time} to the
+    repo. False (skip the entry) if someone else's claim younger than CLAIM_HOURS is there, or the result
+    appeared meanwhile."""
+    files = set(api.list_repo_files(HF_REPO))
+    if path.endswith(".claim") and path[:-len(".claim")] + ".json" in files:
+        print("   finished by someone else meanwhile: skipped", flush=True)
+        return False
+    if path in files:
+        try:
+            c = json.load(open(hf_hub_download(HF_REPO, path, token=tok, force_download=True)))
+            if c.get("worker") != ME and time.time() - c.get("time", 0) < CLAIM_HOURS * 3600:
+                print(f"   {c.get('worker')} is running it (claimed {(time.time() - c['time']) / 60:.0f} min ago):"
+                      " skipped", flush=True)
+                return False
+        except Exception:                                     # noqa: BLE001  (unreadable claim: take it)
+            pass
+    api.upload_file(path_or_fileobj=json.dumps({"worker": ME, "time": time.time()}).encode(), path_in_repo=path,
+                    repo_id=HF_REPO, commit_message=f"{ME} claims {path}")
+    return True
+
+
+def release(path):
+    try:
+        api.delete_file(path, repo_id=HF_REPO, commit_message=f"{ME} releases {path}")
+    except Exception:                                         # noqa: BLE001
+        pass
+
+
+print(f"worker: {ME}", flush=True)
+queue = json.load(open(hf_hub_download(HF_REPO, "evals/queue.json", token=tok, force_download=True)))
 have = set(api.list_repo_files(HF_REPO))
 todo = [e for e in queue if f"runs/{e['job']}/eval_test_{e['tag']}.json" not in have]
 print(f"\n{len(queue)} queued evaluations, {len(todo)} to run: {[e['name'] + ' ' + e['tag'] for e in todo]}\n")
@@ -120,6 +158,10 @@ print(f"\n{len(queue)} queued evaluations, {len(todo)} to run: {[e['name'] + ' '
 # 4. evaluate and upload (a failed evaluation uploads its log as eval_test_<tag>.failed.log, for diagnosis)
 ok, failed = [], []
 for e in todo:
+    lock = f"runs/{e['job']}/eval_test_{e['tag']}.claim"
+    print(f"\n-- {e['name']} {e['tag']}", flush=True)
+    if not claim(lock):
+        continue
     rel = f"runs/{e['job']}/{e.get('checkpoint', 'model.pt')}"
     root = CACHE if USE_DRIVE else "/content/hf"              # checkpoints persist on Drive across resets
     ck = os.path.join(root, rel)
@@ -140,10 +182,12 @@ for e in todo:
                             commit_message=f"Failed evaluation log {e['name']} {e['tag']} (Colab)")
         except Exception as err:                              # noqa: BLE001
             print("   could not upload the log:", err, flush=True)
+        release(lock)
         continue
     for f in (out, log):
         api.upload_file(path_or_fileobj=f, path_in_repo=f"runs/{e['job']}/{os.path.basename(f)}", repo_id=HF_REPO,
-                        commit_message=f"Evaluation {e['name']} {e['tag']} (Colab)")
+                        commit_message=f"Evaluation {e['name']} {e['tag']} (Colab, {ME})")
+    release(lock)
     print(f"== uploaded {e['name']} {e['tag']}", flush=True)
     ok.append(f"{e['name']} {e['tag']}")
 print(f"\nfinished: {len(ok)} uploaded {ok}; {len(failed)} FAILED {failed}")
@@ -158,6 +202,10 @@ except Exception:                                             # noqa: BLE001  (n
 vtodo = [v for v in vqueue if sum(f.startswith(v["out"] + "/") and f.endswith(".mp4") for f in have) < 10]
 print(f"\n{len(vqueue)} queued video sets, {len(vtodo)} to make: {[v['name'] for v in vtodo]}\n")
 for v in vtodo:
+    vlock = v["out"] + "/.claim"
+    print(f"\n-- videos {v['name']}", flush=True)
+    if not claim(vlock):
+        continue
     from huggingface_hub import snapshot_download  # noqa: E402
     snapshot_download(HF_REPO, allow_patterns=["media/test_videos/*"], token=tok, local_dir="/content/hf_media")
     src = "/content/hf_media/media/test_videos"
@@ -178,7 +226,9 @@ for v in vtodo:
     rc = sh([sys.executable, "scripts/make_videos.py", "--out", out, "--device", "cuda", *args], check=False)
     if rc != 0:
         print(f"!! videos {v['name']} failed", flush=True)
+        release(vlock)
         continue
     api.upload_folder(folder_path=out, path_in_repo=v["out"], repo_id=HF_REPO, allow_patterns=["*.mp4"],
-                      commit_message=f"Videos {v['name']} (Colab)")
+                      commit_message=f"Videos {v['name']} (Colab, {ME})")
+    release(vlock)
     print(f"== uploaded videos {v['name']} -> {v['out']}", flush=True)
