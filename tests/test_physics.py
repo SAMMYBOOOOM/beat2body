@@ -41,3 +41,31 @@ def test_local_floor_interpolates_planted_heights():
     planted = np.array([[True, False], [False, False], [False, False], [True, True]])
     f = local_floor(ay, planted)
     assert np.allclose(f, [1.0, 1.1333, 1.2667, 1.4], atol=1e-3)
+
+
+def test_genre_matched_reference_covers_every_genre():
+    from beat2body.evaluate import genre_matched
+    rows = [{"category": c} for c in ["a"] * 10 + ["b"] * 4 + ["c"] * 6]
+    ref = [{"category": c} for c in ["a"] * 2 + ["b"] * 3 + ["c"] * 3]
+    idx = genre_matched(rows, ref)
+    got = [rows[i]["category"] for i in idx]
+    assert got.count("a") == 2 and got.count("b") == 3 and got.count("c") == 3
+    assert idx[:2] == [0, 5]                                    # spread over the genre, not the first windows
+
+
+def test_by_genre_scores_each_genre():
+    import numpy as np
+    import torch
+
+    from beat2body.evaluate import by_genre, kinetic_features, pose_features
+    rng = np.random.default_rng(0)
+    j = rng.standard_normal((8, 40, 17, 2)) * 0.1 + np.linspace(0, 1, 17)[None, None, :, None]
+    genre = torch.tensor([0, 0, 0, 0, 1, 1, 1, 1])
+    m = torch.zeros(8, 40, 38)
+    z_k = (kinetic_features(j).mean(0), kinetic_features(j).std(0) + 1e-8)
+    z_p = (pose_features(j).mean(0), pose_features(j).std(0) + 1e-8)
+    beats = [np.array([10.0, 30.0])] * 8
+    out = by_genre(["x", "y"], genre, j, j, j, genre, m, m, beats, beats, z_k, z_p,
+                   {"x": ({"torso": 0.1}, {"torso": 0.2})})
+    assert set(out) == {"x", "y"} and out["x"]["windows"] == 4
+    assert abs(out["x"]["real_train_FID_k"]) < 1e-3 and out["x"]["drift_torso"] == 0.1

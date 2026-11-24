@@ -156,7 +156,7 @@ def long_drift(gen, bundle, split, seconds, seed, guidance=None, music_guidance=
     for r in rows:
         if length[r["video_id"]] >= seconds * 30:
             vids.setdefault(r["category"], r["video_id"])
-    gen_v, real_v = [], []
+    gen_v, real_v, per = [], [], {}
     for i, (cat, vid) in enumerate(sorted(vids.items())):
         print(f"[evaluate] long dance {i + 1}/{len(vids)}: {vid}", flush=True)
         motion, _, _ = generate_long(gen, bundle, vid, seconds, guidance=guidance, seed=seed,
@@ -165,9 +165,10 @@ def long_drift(gen, bundle, split, seconds, seed, guidance=None, music_guidance=
         real, _, _ = video_motion(cfg["tool"], cat, vid, cfg.get("scale_norm", "dataset"))
         gen_v.append(size_variation(absolute_joints(motion).numpy()))
         real_v.append(size_variation(absolute_joints(torch.from_numpy(real[:len(motion)])).numpy()))
+        per[cat] = (gen_v[-1], real_v[-1])
     keys = ("torso", "thigh", "height")
     return ({k: float(np.mean([g[k] for g in gen_v])) for k in keys},
-            {k: float(np.mean([r[k] for r in real_v])) for k in keys}, len(vids))
+            {k: float(np.mean([r[k] for r in real_v])) for k in keys}, len(vids), per)
 
 
 def beat_power(j, lo=1.0, hi=4.0, fps=30):
@@ -197,15 +198,64 @@ def score(name, j, real_j, beats, z_k, z_p, contact=None):
 SUBSETS = {"all": None, "advanced": "sFM", "basic": "sBM"}
 
 
-def windows(ds, n=None, stance=False):
-    """Deterministic windows of a split: absolute joints, music, genre, beat frames (+ heel / toe stance labels
-    (N, L, 2, 2) when stance=True and the dataset loads them)."""
-    items = [ds[i] for i in range(len(ds) if n is None else min(n, len(ds)))]
+def windows(ds, n=None, stance=False, idx=None):
+    """Deterministic windows of a split (the first n, or the given indices): absolute joints, music, genre, beat
+    frames (+ heel / toe stance labels (N, L, 2, 2) when stance=True and the dataset loads them)."""
+    idx = list(range(len(ds) if n is None else min(n, len(ds)))) if idx is None else idx
+    items = [ds[i] for i in idx]
     motion = torch.stack([x["motion"] for x in items])
     beats = [torch.nonzero(x["beats"]).flatten().numpy().astype(float) for x in items]
     out = (motion, torch.stack([x["audio"] for x in items]), torch.stack([x["category"] for x in items]), beats)
     if stance:
         return out + (torch.stack([x["foot_stance"] for x in items]) if "foot_stance" in items[0] else None,)
+    return out
+
+
+def genre_matched(rows, ref_rows):
+    """Indices into rows with the same number of windows per genre as ref_rows, spread evenly over each genre's
+    windows (so the reference covers every genre and many videos, not the first videos of the split)."""
+    from collections import Counter, defaultdict
+    by = defaultdict(list)
+    for i, r in enumerate(rows):
+        by[r["category"]].append(i)
+    out = []
+    for cat, n in sorted(Counter(r["category"] for r in ref_rows).items()):
+        pool = by.get(cat, [])
+        out += [pool[int(k * len(pool) / n)] for k in range(min(n, len(pool)))]
+    return out
+
+
+def by_genre(names, genre, generated, real, train, train_genre, gen_m, real_m, beats, train_beats, z_k, z_p,
+             drift=None):
+    """Per-genre scores. The real training windows of the same genre (same count) give each genre's own reference
+    (FID with ~50-120 windows is biased upwards, so compare a model with its genre's reference, not across genres)."""
+    from beat2body.data import CONTACT_THRESHOLD
+    from beat2body.model.footlock import feet_stats
+    from beat2body.physics import physics_stats, summarize
+    out = {}
+    for c in sorted(int(x) for x in genre.unique()):
+        m, mt = (genre == c).numpy(), (train_genre == c).numpy()
+        b = [x for x, k in zip(beats, m) if k]
+        row = {k: v for k, v in score("model", generated[m], real[m], b, z_k, z_p).items() if k != "name"}
+        if mt.sum() >= 2:
+            ref = score("train", train[mt], real[m], [x for x, k in zip(train_beats, mt) if k], z_k, z_p)
+            row.update({f"real_train_{k}": ref[k] for k in ("FID_k", "FID_p", "Div_k", "speed", "BeatPow")})
+        row["real_Div_k"] = score("real", real[m], real[m], b, z_k, z_p)["Div_k"]
+        row["real_BoneCV"] = bone_cv(real[m])
+        f = feet_stats(generated[m], CONTACT_THRESHOLD, (gen_m[m][..., CONTACT] > 0.5).numpy())
+        fr = feet_stats(real[m], CONTACT_THRESHOLD, (real_m[m][..., CONTACT] > 0.5).numpy())
+        for k in ("stance_drift", "swing_speed", "no_foot_planted", "root_jitter"):
+            row[k], row[f"real_{k}"] = f[k], fr[k]
+        p = summarize([physics_stats(x) for x in generated[m]])
+        pr = summarize([physics_stats(x) for x in real[m]])
+        for k in ("flights", "flight_acc_y_median", "penetration_mean"):
+            row[k], row[f"real_{k}"] = p[k], pr[k]
+        row["windows"] = int(m.sum())
+        name = names[c] if c < len(names) else str(c)
+        if drift and name in drift:
+            row.update({f"drift_{k}": v for k, v in drift[name][0].items()})
+            row.update({f"real_drift_{k}": v for k, v in drift[name][1].items()})
+        out[name] = row
     return out
 
 
@@ -293,9 +343,13 @@ def run(args):
             ds.rows = [r for r in ds.rows if f"_{tag}_" in r["video_id"]]
         return ds
     head = getattr(gen.model, "contact_head", None) is not None and gen.diffusion is not None
-    real_m, audio, genre, beats, stance = windows(subset(DanceClips(cfg["tool"], args.split, foot_labels=head, **kw)),
-                                                  args.max_windows, stance=True)
-    train_m, _, train_genre, train_beats = windows(subset(DanceClips(cfg["tool"], "train", **kw)), len(real_m))
+    test_ds = subset(DanceClips(cfg["tool"], args.split, foot_labels=head, **kw))
+    train_ds = subset(DanceClips(cfg["tool"], "train", **kw))
+    real_m, audio, genre, beats, stance = windows(test_ds, args.max_windows, stance=True)
+    # reference real training windows: same genres and counts as the test windows (2026-11-24; before, the first
+    # len(test) training windows, which covered only 3 genres)
+    train_m, _, train_genre, train_beats = windows(train_ds, idx=genre_matched(train_ds.rows,
+                                                                              test_ds.rows[:len(real_m)]))
     real = absolute_joints(real_m).numpy()
     z_k = (kinetic_features(real).mean(0), kinetic_features(real).std(0) + 1e-8)
     z_p = (pose_features(real).mean(0), pose_features(real).std(0) + 1e-8)
@@ -377,19 +431,34 @@ def run(args):
             print(f"{name:16s}{v['n']:9d}" + "".join(f"{v[k]:9.3f}" for k in ("accuracy", "balanced_accuracy",
                                                                                 "brier", "ece", "pred_share",
                                                                                 "label_share")))
-    drift = None
+    drift, drift_per = None, None
     if args.long_seconds > 0:
-        g, r, n = long_drift(gen, bundle, args.split, args.long_seconds, args.seed, gw, mw, args)
+        g, r, n, drift_per = long_drift(gen, bundle, args.split, args.long_seconds, args.seed, gw, mw, args)
         drift = {"generated": g, "real": r, "videos": n, "seconds": args.long_seconds}
         print(f"\nLong-dance drift ({n} videos x {args.long_seconds:.0f} s, variation std/mean over the piece):")
         print(f"{'':12s}{'torso':>9s}{'thigh':>9s}{'height':>9s}")
         for name, v in (("generated", g), ("real", r)):
             print(f"{name:12s}" + "".join(f"{v[k]:9.3f}" for k in ("torso", "thigh", "height")))
+    cats = bundle.get("categories") or {}                       # {genre name: index}
+    names = sorted(cats, key=cats.get) if isinstance(cats, dict) else list(cats)
+    genres = by_genre(names, genre, generated, real, absolute_joints(train_m).numpy(), train_genre, gen_m, real_m,
+                      beats, train_beats, z_k, z_p, drift_per)
+    print("\nBy genre (FID: compare a model with its genre's real-training reference; ~50-120 windows per genre)")
+    hdr = ("win", "FID_k", "ref_k", "FID_p", "ref_p", "speed", "BeatPow", "drift", "r_drift", "swing", "r_swing",
+           "acc_y", "r_acc_y")
+    print(f"{'':14s}" + "".join(f"{h:>8s}" for h in hdr))
+    for name, v in genres.items():
+        vals = (v["windows"], v["FID_k"], v.get("real_train_FID_k", float("nan")), v["FID_p"],
+                v.get("real_train_FID_p", float("nan")), v["speed"], v["BeatPow"], v["stance_drift"],
+                v["real_stance_drift"], v["swing_speed"], v["real_swing_speed"], v["flight_acc_y_median"],
+                v["real_flight_acc_y_median"])
+        print(f"{name[:14]:14s}" + "".join(f"{x:8d}" if isinstance(x, int) else f"{x:8.3f}" for x in vals))
     name = f"eval_{args.split}" + (f"_{args.tag}" if args.tag else "") + ".json"
     path = os.path.join(os.path.dirname(os.path.abspath(args.checkpoint)), name)
     with open(path, "w") as f:
         json.dump({"split": args.split, "subset": args.subset, "windows": len(real), "guidance": gw,
                    "music_guidance": mw, "rows": rows, "long_drift": drift,
                    "feet": feet, "foot_lock": bool(args.foot_lock), "root_smooth": args.root_smooth,
-                   "style": getattr(args, "style", "none"), "physics": phys, "contact_head": chead}, f, indent=1)
+                   "style": getattr(args, "style", "none"), "physics": phys, "contact_head": chead,
+                   "by_genre": genres, "reference": "genre-matched"}, f, indent=1)
     print(f"wrote {path}")
