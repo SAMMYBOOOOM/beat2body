@@ -30,11 +30,13 @@ the camera no longer look bigger); within a video, real foreshortening is kept. 
 the single dataset-wide scale of the cleaned keypoints.
 
 Foot contact: an ankle is "in contact" when its image speed (with root motion) is below
-CONTACT_THRESHOLD torso lengths per frame (~1.5 px at 1080p, ~40% of frames).
+CONTACT_THRESHOLD torso lengths per frame (~1.5 px at 1080p, ~40% of frames). contact[t] describes the step
+t-1 -> t (frame 0 copies frame 1), so the step t -> t+1 is planted when contact[t+1] is set.
 
     python -m beat2body data --tool dwpose --download      # check: shapes, NaNs, stats, speed
 """
 import csv
+import glob
 import hashlib
 import json
 import os
@@ -57,7 +59,7 @@ MOTION_DIM = 2 + 2 + 2 * N_JOINTS              # 38
 CONTACT, ROOT, JOINTS = slice(0, 2), slice(2, 4), slice(4, MOTION_DIM)
 FEATURE_SETS = {"edge": (["audio_edge"], 35), "mel": (["audio_mel", "audio_onset"], 65)}
 PHASE_DIM = 2
-SCALE_NORMS = ("video", "dataset")
+SCALE_NORMS = ("dancer", "video", "dataset")
 
 
 def audio_dim(feature_set):
@@ -99,21 +101,46 @@ def torso_length(kp, valid):
     return float(np.median(t[ok])) if ok.any() else 1.0
 
 
+_DANCER_TORSO = {}
+
+
+def dancer_torso(tool, video_id):
+    """Median torso length of this dancer over all of their videos (per-video medians), or None for non-AIST
+    names. Robust to videos that are mostly floor work, where a single video's torso is foreshortened."""
+    d = aist.dancer_id(video_id)
+    if d is None:
+        return None
+    if (tool, d) not in _DANCER_TORSO:
+        meds = []
+        for f in glob.glob(os.path.join(paths.keypoints_dir(), tool, "*", f"*_{d}_*.npz")):
+            z = np.load(f)
+            meds.append(torso_length(z["keypoints"], z["valid"]))
+        _DANCER_TORSO[(tool, d)] = float(np.median(meds)) if meds else None
+    return _DANCER_TORSO[(tool, d)]
+
+
 def video_motion(tool, category, video_id, scale_norm="video"):
-    """(T, 38) motion, (T, 17) valid, (T,) root_valid for one video."""
+    """(T, 38) motion, (T, 17) valid, (T,) root_valid for one video. scale_norm: dancer = this dancer's
+    median torso over all their videos = 1; video = this video's median torso = 1 (wrong for floor work);
+    dataset = one scale for all."""
     d = np.load(paths.clean_keypoint_path(tool, category, video_id))
     kp, valid, scale = d["keypoints"].astype(np.float32), d["valid"], float(d["scale"])
     centre = np.array([float(d["width"]) / 2, float(d["height"]) / 2], np.float32)
     root = (d["pelvis"].astype(np.float32) - centre) / scale
-    if scale_norm == "video":                    # this dancer's torso = 1
-        t = torso_length(kp, valid)
+    if scale_norm in ("video", "dancer"):
+        t = (dancer_torso(tool, video_id) if scale_norm == "dancer" else None) or torso_length(kp, valid)
         kp, root = kp / t, root / t
-    ankles = kp[:, ANKLES] + root[:, None]
-    speed = np.linalg.norm(np.diff(ankles, axis=0), axis=-1)
-    speed = np.concatenate([speed[:1], speed])                   # (T, 2)
-    contact = (speed < CONTACT_THRESHOLD).astype(np.float32)
+    contact = contact_labels(kp[:, ANKLES] + root[:, None])
     motion = np.concatenate([contact, root, kp.reshape(len(kp), -1)], 1)
     return motion, valid.astype(bool), valid[:, L_HIP] & valid[:, R_HIP]
+
+
+def contact_labels(ankles):
+    """(T, 2, 2) absolute ankle positions -> (T, 2) float 0/1: contact[t] = the ankle moved less than
+    CONTACT_THRESHOLD over the step t-1 -> t (contact[0] = contact[1])."""
+    speed = np.linalg.norm(np.diff(ankles, axis=0), axis=-1)
+    speed = np.concatenate([speed[:1], speed])                   # (T, 2)
+    return (speed < CONTACT_THRESHOLD).astype(np.float32)
 
 
 def video_audio(video_id, feature_set):
@@ -179,6 +206,18 @@ def music_input(video_id, feature_set, stats, beats=None):
 # ---------------------------------------------------------------------------
 # dataset
 # ---------------------------------------------------------------------------
+def foot_stance(video_id, T):
+    """(T, 2 feet, 2 [heel, toe]) int8 stance labels for the step t-1 -> t from features/contact/<video>.npz
+    (1 planted, 0 moving, -1 unknown); all unknown where the file or frames are missing."""
+    out = np.full((T, 2, 2), -1, np.int8)
+    f = os.path.join(paths.features_dir(), "contact", video_id + ".npz")
+    if os.path.exists(f):
+        d = np.load(f)
+        n = min(T, len(d["heel"]))
+        out[:n, :, 0], out[:n, :, 1] = d["heel"][:n], d["toe"][:n]
+    return out
+
+
 def flip_motion(motion, valid, root_valid):
     """Mirror left / right: negate x of root and joints, swap left / right joints and contacts."""
     m = motion.copy()
@@ -215,7 +254,7 @@ class DanceClips(Dataset):
 
     def __init__(self, tool="dwpose", split="train", seq_len=150, feature_set="edge", augment=None,
                  flip_prob=0.5, stats=None, scale_norm="video", extra_tools=(), stretch=0.0,
-                 scale=0.0, rotate=0.0, shift=0.0):
+                 scale=0.0, rotate=0.0, shift=0.0, foot_labels=False):
         if tool not in TOOLS or split not in SPLITS or feature_set not in FEATURE_SETS:
             raise ValueError(f"tool in {TOOLS}, split in {SPLITS}, feature_set in {list(FEATURE_SETS)}")
         self.tool, self.split, self.feature_set = tool, split, feature_set
@@ -224,6 +263,7 @@ class DanceClips(Dataset):
             raise ValueError(f"no {split} clips in {paths.meta_csv_path(tool)}")
         self.augment = (split == "train") if augment is None else augment
         self.flip_prob, self.stretch, self.scale, self.rotate, self.shift = flip_prob, stretch, scale, rotate, shift
+        self.foot_labels = foot_labels         # heel / toe stance labels (prep/contact.py) as item["foot_stance"]
         self.stats = stats or audio_stats(tool, feature_set)
         self.cats = aist.load_categories()
         shortest = min(int(r["end_frame"]) - int(r["start_frame"]) for r in self.rows)
@@ -244,6 +284,8 @@ class DanceClips(Dataset):
                     continue
                 motion, valid, root_valid = video_motion(t, r["category"], v, scale_norm)
                 self.videos[(t, v)] = {"motion": motion, "valid": valid, "root_valid": root_valid}
+                if foot_labels:
+                    self.videos[(t, v)]["stance"] = foot_stance(v, len(motion))
                 avail.append(t)
             T = min([len(audio)] + [len(self.videos[(t, v)]["motion"]) for t in avail])
             for t in avail:
@@ -292,6 +334,9 @@ class DanceClips(Dataset):
             motion[:, CONTACT] = v["motion"][near][:, CONTACT]
             audio = ((1 - w) * m["audio"][lo_i] + w * m["audio"][hi_i]).astype(np.float32)
             valid, root_valid = v["valid"][near], v["root_valid"][near]
+        stance = None
+        if self.foot_labels:
+            stance = v["stance"][np.arange(s, s + L) if src == L else near].copy()
         b = (m["beats"] - s) * (L - 1) / max(src - 1, 1)
         beats = np.zeros(L, np.float32)
         bi = np.round(b).astype(int)
@@ -300,11 +345,15 @@ class DanceClips(Dataset):
         if self.augment:
             if float(torch.rand(())) < self.flip_prob:
                 motion, valid, root_valid = flip_motion(motion, valid, root_valid)
+                if stance is not None:
+                    stance = stance[:, [1, 0]]                                     # left / right feet swap
             if self.scale or self.rotate or self.shift:
                 motion = jitter_motion(motion, self._rand(1 - self.scale, 1 + self.scale),
                                        np.deg2rad(self._rand(-self.rotate, self.rotate)),
                                        (self._rand(-self.shift, self.shift), self._rand(-self.shift, self.shift)))
+        out = {} if stance is None else {"foot_stance": torch.from_numpy(np.ascontiguousarray(stance))}
         return {
+            **out,
             "motion": torch.from_numpy(np.ascontiguousarray(motion)),
             "valid": torch.from_numpy(np.ascontiguousarray(valid)),
             "root_valid": torch.from_numpy(np.ascontiguousarray(root_valid)),

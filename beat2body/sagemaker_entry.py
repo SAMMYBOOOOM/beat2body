@@ -75,6 +75,10 @@ def pose_main(hps):
         d = os.path.join(root, "raw_video", aist.GENRES[v[1:3]])
         os.makedirs(d, exist_ok=True)
         out = os.path.join(d, v + ".mp4")
+        given = os.path.join(CHANNEL, aist.GENRES[v[1:3]], v + ".mp4")     # aws pose --upload-videos
+        if os.path.exists(given):
+            shutil.copy(given, out)
+            return out
         for attempt in range(4):
             try:
                 urllib.request.urlretrieve(aist.VIDEO_URL.format(video_id=v), out + ".part")
@@ -85,7 +89,9 @@ def pose_main(hps):
         return None
     with ThreadPoolExecutor(8) as ex:
         videos = [p for p in ex.map(fetch, todo) if p]
-    print(f"[pose] downloaded {len(videos)} of {len(todo)} videos", flush=True)
+    print(f"[pose] got {len(videos)} of {len(todo)} videos", flush=True)
+    if todo and not videos:
+        sys.exit("[pose] no video could be read or downloaded; failing the job")
     from beat2body.cli import main as cli_main
     if videos:
         cli_main(["--data-root", root, "pose", "dwpose", "--device", "cuda", "--videos", *videos,

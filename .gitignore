@@ -71,6 +71,8 @@ dmypy.json
 # ---------- Jupyter ----------
 .ipynb_checkpoints/
 *.ipynb_checkpoints
+# Local Colab helper notebooks (may hold tokens); the project uses scripts, not notebooks
+*.ipynb
 
 # ---------- Environment / secrets ----------
 .env
@@ -126,6 +128,8 @@ mlruns/
 2d/features/**/*.npy
 2d/features/**/*.npz
 2d/features/**/*.pkl
+2d/features/contact/
+2d/features/floor/
 
 # Sliding-window clips and their per-tool manifests — regenerable, published on Hugging Face
 2d/clips/**/*.npz
@@ -137,6 +141,12 @@ mlruns/
 # Dataset cards (python -m beat2body hf card) and rendered videos
 2d/hf_cards/
 renders/
+
+# Model-generated videos and keypoints: published on Hugging Face (SizheZ03/beat2body-runs) at the same paths
+reports/**/*.mp4
+reports/**/*.npz
+results/**/*.mp4
+results/**/*.npz
 
 # 2d/categories.json IS tracked: it fixes the genre -> embedding index mapping,
 # so a run on a subset of genres that rewrites it shows up in `git status`.
@@ -160,3 +170,5 @@ renders/
 *.rej
 .DS_Store
 dir.txt
+# the team notebook holds no tokens (it reads the Colab secret HF_TOKEN)
+!notebooks/beat2body_team.ipynb

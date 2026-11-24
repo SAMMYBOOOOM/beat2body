@@ -64,3 +64,17 @@ Notes
 - `--amp` (bfloat16) needs an L4 / A100 / newer GPU; drop it on a T4.
 - `render` writes a stick-figure video (`{RUN}/gLH_mLH4.mp4`; no audio, since the raw videos are not
   cloned). `gLH_sFM_c01_d16_mLH4_ch05` uses song mLH4, which is in the held-out test set.
+
+## Evaluations on Colab (queue on Hugging Face)
+
+Evaluations of finished runs run on Colab, not on a local machine. Paste [scripts/colab_eval.py](../scripts/colab_eval.py)
+into one Colab cell (GPU runtime) and run it. It needs a Colab secret `HF_TOKEN` with write access to
+`SizheZ03/beat2body-runs`.
+
+- The queue is `evals/queue.json` in `SizheZ03/beat2body-runs`: entries `{"name", "job", "checkpoint", "tag",
+  "args"}`, where `job` is the run folder under `runs/` there.
+- For each entry without a result, the cell downloads the checkpoint, runs `beat2body evaluate` on the test songs
+  (seed 0, 50 steps, eta 1, guidance 2, 20 s long dances) with the entry's `args` (e.g. `--style genre`), and
+  uploads `runs/<job>/eval_test_<tag>.json` and its `.log`. It prints realism, manner, feet and physics.
+- To queue a run: put its folder in `runs/` on Hugging Face and append an entry to the queue. Re-running the cell
+  skips finished entries.

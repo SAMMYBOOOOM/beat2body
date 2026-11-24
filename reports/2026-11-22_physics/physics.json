@@ -1,0 +1,177 @@
+{
+ "g_expected_torso_per_frame2": 0.0218,
+ "real_all": {
+  "ballet_jazz": {
+   "flight_share": 0.06853688646715764,
+   "flights": 149,
+   "flight_acc_y_median": 0.016075944907836145,
+   "flight_acc_y_iqr": 0.01605095489933858,
+   "flight_acc_x_abs_median": 0.0016779112536609775,
+   "penetration_mean": 0.004876913432751157,
+   "penetration_share": 0.025583023644099746,
+   "balance_out_share": 0.3377772669808068
+  },
+  "break": {
+   "flight_share": 0.13592453172479477,
+   "flights": 285,
+   "flight_acc_y_median": 0.018853828431593545,
+   "flight_acc_y_iqr": 0.016188280580693604,
+   "flight_acc_x_abs_median": 0.0014393529959490436,
+   "penetration_mean": 0.035438491268946604,
+   "penetration_share": 0.061230889847118775,
+   "balance_out_share": 0.44922675610210544
+  },
+  "house": {
+   "flight_share": 0.08884287085206323,
+   "flights": 195,
+   "flight_acc_y_median": 0.01768685289104068,
+   "flight_acc_y_iqr": 0.011909960744590501,
+   "flight_acc_x_abs_median": 0.0015867589805443531,
+   "penetration_mean": 0.004413752737922162,
+   "penetration_share": 0.025994223505887582,
+   "balance_out_share": 0.5123563218390804
+  },
+  "krump": {
+   "flight_share": 0.023990713272281698,
+   "flights": 69,
+   "flight_acc_y_median": 0.021499684590637703,
+   "flight_acc_y_iqr": 0.006836768930895017,
+   "flight_acc_x_abs_median": 0.0015306359265407805,
+   "penetration_mean": 0.0002939640922266489,
+   "penetration_share": 0.0017387070974023717,
+   "balance_out_share": 0.5301396627831246
+  },
+  "la_hiphop": {
+   "flight_share": 0.013509605453418715,
+   "flights": 43,
+   "flight_acc_y_median": 0.0159261583944957,
+   "flight_acc_y_iqr": 0.01203241341104961,
+   "flight_acc_x_abs_median": 0.0014894453130811635,
+   "penetration_mean": 0.000293867436969532,
+   "penetration_share": 0.0021849963583394027,
+   "balance_out_share": 0.48140832975525977
+  },
+  "lock": {
+   "flight_share": 0.03283801932157865,
+   "flights": 93,
+   "flight_acc_y_median": 0.02079043194015115,
+   "flight_acc_y_iqr": 0.010846862408867909,
+   "flight_acc_x_abs_median": 0.0013998348717866903,
+   "penetration_mean": 0.0005785712141822794,
+   "penetration_share": 0.003467341392559273,
+   "balance_out_share": 0.27678335243805663
+  },
+  "middle_hiphop": {
+   "flight_share": 0.057766367137355584,
+   "flights": 167,
+   "flight_acc_y_median": 0.01762300100055624,
+   "flight_acc_y_iqr": 0.010461092796063446,
+   "flight_acc_x_abs_median": 0.0012245475636011066,
+   "penetration_mean": 0.001842239935599524,
+   "penetration_share": 0.010002273243919073,
+   "balance_out_share": 0.566147859922179
+  },
+  "pop": {
+   "flight_share": 0.0014980952788597355,
+   "flights": 5,
+   "flight_acc_y_median": 0.0035848851977284732,
+   "flight_acc_y_iqr": 0.005069404917894272,
+   "flight_acc_x_abs_median": 0.0019325340322817563,
+   "penetration_mean": 0.00027101073412671495,
+   "penetration_share": 0.0014357501794687725,
+   "balance_out_share": 0.31796610169491524
+  },
+  "street_jazz": {
+   "flight_share": 0.008514943303966615,
+   "flights": 21,
+   "flight_acc_y_median": 0.0025951418878222983,
+   "flight_acc_y_iqr": 0.004099618850815865,
+   "flight_acc_x_abs_median": 0.0022825317219197956,
+   "penetration_mean": 0.0006564076180449112,
+   "penetration_share": 0.004383218534752661,
+   "balance_out_share": 0.3285213819763228
+  },
+  "waack": {
+   "flight_share": 0.013354449342978213,
+   "flights": 34,
+   "flight_acc_y_median": 0.005092235081428602,
+   "flight_acc_y_iqr": 0.006786068829385029,
+   "flight_acc_x_abs_median": 0.0011096426114468553,
+   "penetration_mean": 0.0013263563622958553,
+   "penetration_share": 0.007623430266404236,
+   "balance_out_share": 0.41047477113050884
+  },
+  "all": {
+   "flight_share": 0.043183040905225525,
+   "flights": 1061,
+   "flight_acc_y_median": 0.017910745637497786,
+   "flight_acc_y_iqr": 0.014434215607076972,
+   "flight_acc_x_abs_median": 0.0014933048497754963,
+   "penetration_mean": 0.005664223527703586,
+   "penetration_share": 0.015938491063642316,
+   "balance_out_share": 0.40233697119278083
+  }
+ },
+ "test_songs": {
+  "real": {
+   "flight_share": 0.04133333333333333,
+   "flights": 32,
+   "flight_acc_y_median": 0.020287644789878823,
+   "flight_acc_y_iqr": 0.007011625751017308,
+   "flight_acc_x_abs_median": 0.001402797183079798,
+   "penetration_mean": 0.003875405691126423,
+   "penetration_share": 0.017221715328467155,
+   "balance_out_share": 0.4517345399698341
+  },
+  "2.1b": {
+   "flight_share": 0.03216666666666667,
+   "flights": 19,
+   "flight_acc_y_median": 0.01074718968653129,
+   "flight_acc_y_iqr": 0.009880977823350314,
+   "flight_acc_x_abs_median": 0.004567678533655764,
+   "penetration_mean": 0.06869168346039108,
+   "penetration_share": 0.17180698342132072,
+   "balance_out_share": 0.46403508771929824
+  },
+  "2.1b.1": {
+   "flight_share": 0.051,
+   "flights": 22,
+   "flight_acc_y_median": 0.00996329914510928,
+   "flight_acc_y_iqr": 0.013011525834721305,
+   "flight_acc_x_abs_median": 0.0022485931712134966,
+   "penetration_mean": 0.02818786876311925,
+   "penetration_share": 0.09648029155078162,
+   "balance_out_share": 0.4642588412340105
+  },
+  "2.1b.2": {
+   "flight_share": 0.04883333333333333,
+   "flights": 34,
+   "flight_acc_y_median": 0.009197254462185772,
+   "flight_acc_y_iqr": 0.007810795830679746,
+   "flight_acc_x_abs_median": 0.0022097982535510263,
+   "penetration_mean": 0.02472591860958729,
+   "penetration_share": 0.10890704006223259,
+   "balance_out_share": 0.35020242914979755
+  },
+  "4.1": {
+   "flight_share": 0.017666666666666667,
+   "flights": 12,
+   "flight_acc_y_median": 0.012462915235872975,
+   "flight_acc_y_iqr": 0.012234490319560492,
+   "flight_acc_x_abs_median": 0.0025402285013438356,
+   "penetration_mean": 0.007007676691930845,
+   "penetration_share": 0.02752999077207013,
+   "balance_out_share": 0.24406364749082007
+  },
+  "4.4": {
+   "flight_share": 0.013666666666666667,
+   "flights": 10,
+   "flight_acc_y_median": 0.01395097865229599,
+   "flight_acc_y_iqr": 0.009385595478133734,
+   "flight_acc_x_abs_median": 0.0013269196742935726,
+   "penetration_mean": 0.0005590571206024424,
+   "penetration_share": 0.00406421459053038,
+   "balance_out_share": 0.12652439024390244
+  }
+ }
+}

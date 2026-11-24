@@ -1,5 +1,7 @@
 # beat2body — Status and Next Steps (handoff)
 
+> **Superseded for the model / training work by [HANDOFF.md](HANDOFF.md) (2026-11-19).** This file keeps the data-pipeline history.
+
 Snapshot taken **2026-11-18** from the GitHub repo (branch `main` @ `c145365`) and the
 Hugging Face datasets under `SAMBOOM`. Use this file as the starting brief for the next working
 session: read it first, then the files it points to.

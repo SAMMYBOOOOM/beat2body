@@ -1,0 +1,42 @@
+{
+ "real": {
+  "moves_per_s_per_foot": 1.5125,
+  "travel_median": 0.15181326866149902,
+  "relocating_moves_share": 0.6148760330578512,
+  "relocations_per_s_per_foot": 0.93,
+  "lift_median": 0.13114142417907715,
+  "slide_share": 0.2049586776859504,
+  "slide_share_of_relocations": 0.06720430107526881,
+  "move_frames_median": 6.0
+ },
+ "2.1b.2": {
+  "moves_per_s_per_foot": 1.26,
+  "travel_median": 0.22843505442142487,
+  "relocating_moves_share": 0.6805555555555556,
+  "relocations_per_s_per_foot": 0.8575,
+  "lift_median": 0.19053244590759277,
+  "slide_share": 0.15873015873015872,
+  "slide_share_of_relocations": 0.05830903790087463,
+  "move_frames_median": 10.5
+ },
+ "4.1": {
+  "moves_per_s_per_foot": 1.4,
+  "travel_median": 0.05789679475128651,
+  "relocating_moves_share": 0.39464285714285713,
+  "relocations_per_s_per_foot": 0.5525,
+  "lift_median": 0.15156900882720947,
+  "slide_share": 0.2857142857142857,
+  "slide_share_of_relocations": 0.12217194570135746,
+  "move_frames_median": 6.0
+ },
+ "4.4": {
+  "moves_per_s_per_foot": 1.4275,
+  "travel_median": 0.09651734679937363,
+  "relocating_moves_share": 0.4851138353765324,
+  "relocations_per_s_per_foot": 0.6925,
+  "lift_median": 0.13210773468017578,
+  "slide_share": 0.17162872154115585,
+  "slide_share_of_relocations": 0.02888086642599278,
+  "move_frames_median": 4.0
+ }
+}

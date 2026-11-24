@@ -17,6 +17,7 @@ Training (needs torch):
     train         train the diffusion model or the GRU baseline (locally or on SageMaker)
     sample        generate a dance for a dataset video's music with a trained model
     evaluate      score a trained model on val / test music (FID, diversity, beats, foot contact)
+    probe         controlled checks: separate music / genre guidance sweep, shifted beat grid
     report        shareable videos of a run: training progress + long dances, and a summary
     aws           SageMaker: upload-data | submit | status | download
 Inspection:
@@ -38,20 +39,22 @@ def _commands():
     # imported lazily so `--help` works without the optional dependencies of each step
     import beat2body.pose as pose_pkg
     from beat2body import render
-    from beat2body.prep import audio, audit, clean, clips, frames, hf, run_all
+    from beat2body.prep import audio, audit, clean, clips, contact, floor, frames, hf, run_all
     beats = SimpleNamespace(DOC=audio.BEATS_DOC, add_args=audio.add_beats_args, run=audio.run_beats)
     edge_feats = SimpleNamespace(DOC=audio.EDGE_DOC, add_args=audio.add_edge_args, run=audio.run_edge)
     commands = {"clean": clean, "audio": audio, "beats": beats, "edge-features": edge_feats, "clips": clips,
-                "all": run_all, "frames": frames, "audit": audit, "hf": hf, "render": render}
+                "all": run_all, "frames": frames, "audit": audit, "hf": hf, "render": render, "contact": contact,
+                "floor": floor}
     try:  # training commands need torch (pip install -e ".[train]")
         from beat2body import data, train
         commands["data"] = data
         commands["train"] = train
         commands["sample"] = SimpleNamespace(DOC=train.SAMPLE_DOC, add_args=train.add_sample_args,
                                              run=train.run_sample)
-        from beat2body import aws, evaluate, report
+        from beat2body import aws, evaluate, probe, report
         commands["aws"] = aws
         commands["evaluate"] = evaluate
+        commands["probe"] = probe
         commands["report"] = report
     except ImportError:
         pass

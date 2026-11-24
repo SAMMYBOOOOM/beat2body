@@ -58,6 +58,7 @@ from beat2body.model.diffusion import (
 )
 from beat2body.model.edge import EDGEDecoder
 from beat2body.model.nets import GRUBaseline
+from beat2body.model.style import DIM as STYLE_DIM
 from beat2body.paths import TOOLS
 
 DOC = __doc__
@@ -82,8 +83,9 @@ def add_args(p):
     p.add_argument("--model", choices=["diffusion", "gru"], default="diffusion")
     p.add_argument("--tool", default="dwpose", choices=TOOLS)
     p.add_argument("--feature-set", default="edge", choices=list(FEATURE_SETS))
-    p.add_argument("--scale-norm", default="video", choices=list(SCALE_NORMS),
-                   help="video: every dancer the same body size (default); dataset: one scale for all videos")
+    p.add_argument("--scale-norm", default="dancer", choices=list(SCALE_NORMS),
+                   help="dancer (default): every dancer the same body size, measured over all their videos; "
+                        "video: per video (inflates floor-work videos); dataset: one scale for all (EDGE-like)")
     p.add_argument("--seq-len", type=int, default=150, help="frames per window (EDGE: 5 s at 30 fps)")
     p.add_argument("--batch-size", type=int, default=64)
     p.add_argument("--steps", type=int, default=66000, help="EDGE: 2000 epochs = ~66k steps here")
@@ -102,6 +104,11 @@ def add_args(p):
     g.add_argument("--layers", type=int, default=8)
     g.add_argument("--heads", type=int, default=8)
     g.add_argument("--dropout", type=float, default=None, help="recipe: edge 0.1, regularized 0.2")
+    g.add_argument("--beat-attn", action="store_true",
+                   help="beat-relative cross-attention: learned per-head bias on the music frames by their offset "
+                        "from the motion frame in beats (anticipation / delay / offbeat) and by their beat phase")
+    g.add_argument("--beat-bins", type=int, default=8, help="beat-relative bias bins per beat")
+    g.add_argument("--beat-range", type=float, default=2.0, help="beat-relative offsets clamped to +/- this, beats")
     g.add_argument("--gru-hidden", type=int, default=256)
     g.add_argument("--gru-layers", type=int, default=2)
     g = p.add_argument_group("diffusion")
@@ -125,6 +132,59 @@ def add_args(p):
     g.add_argument("--energy-smooth", type=float, default=2.0,
                    help="energy loss: speed measured on motion blurred over this many frames (jitter does not "
                         "count); 0 = raw speed (the first version, which the model met partly with jitter)")
+    g.add_argument("--energy-amplitude", type=float, default=1.0,
+                   help="energy loss: weight of the movement-amplitude term (0 = speed only; the amplitude term "
+                        "pushed limbs to ~1.3x the real range)")
+    g.add_argument("--energy-shape", choices=["square", "gaussian"], default="square",
+                   help="energy loss per window and joint: square = d^2 of the log ratio to real (every window pulled "
+                        "to its real energy); gaussian = 2 sigma^2 (1 - exp(-d^2 / 2 sigma^2)): same for small d, "
+                        "bounded for large d")
+    g.add_argument("--energy-sigma", type=float, default=0.3, help="gaussian energy loss width (log ratio)")
+    g.add_argument("--energy-size-norm", action="store_true",
+                   help="energy loss on motion with frame-to-frame body-size changes removed (size pulses and depth "
+                        "changes do not count as movement)")
+    g.add_argument("--energy-max-t", type=int, default=None,
+                   help="energy loss only at diffusion steps t < this (500 = noise below half the signal); "
+                        "default: all steps")
+    g.add_argument("--contact-head", action="store_true",
+                   help="a head on the decoder predicting heel / toe planted per foot, trained on the stance labels "
+                        "(prep/contact.py) with --contact-weight; its probabilities drive the soft foot lock")
+    g.add_argument("--contact-weight", type=float, default=0.1, help="contact-head BCE weight")
+    g.add_argument("--foot-contact", choices=["pred", "label", "label-prev", "stance"], default="pred",
+                   help="foot-skating loss on frames where the ankle is planted according to the model's own contact "
+                        "output (pred, EDGE; averaged over all frames) or the real dancer (label; averaged over the "
+                        "planted frames; label-prev = the first, one-step-late version used by runs 4.1 / 4.2; "
+                        "stance = the heel / toe labels: the ankle held where the real heel is planted, toe-only "
+                        "pivots and unknown steps free). "
+                        "Its weight is the 4th --loss-weights value, or --foot-weight")
+    g.add_argument("--foot-weight", type=float, default=None,
+                   help="foot-skating loss weight (overrides the 4th --loss-weights value; one value, so it passes "
+                        "through `aws submit`)")
+    g.add_argument("--root-accel-weight", type=float, default=0.0,
+                   help="loss on the root's acceleration vs the real one (against root jitter); 0 = off")
+    g.add_argument("--foot-max-t", type=int, default=None,
+                   help="label foot loss and root-acceleration loss only at diffusion steps t < this (500 = noise "
+                        "below half the signal); default: all steps")
+    g.add_argument("--reloc-weight", type=float, default=0.0,
+                   help="relocation loss: each ankle's and the pelvis's displacement over --reloc-span frames "
+                        "matches the real window's (log ratio, phase-invariant; steps that change place, not "
+                        "tapping in place); 0 = off")
+    g.add_argument("--reloc-span", type=int, default=15, help="relocation loss span in frames (15 = 0.5 s)")
+    g.add_argument("--reloc-max-t", type=int, default=None,
+                   help="relocation loss only at diffusion steps t < this; default: all steps")
+    g.add_argument("--gravity-weight", type=float, default=0.0,
+                   help="physics loss (physics.gravity_loss), flight term: per jump, the centre of mass falls at g "
+                        "with no sideways acceleration (parabola over the jump); 0 = off")
+    g.add_argument("--gravity-down-weight", type=float, default=0.0,
+                   help="physics loss, downward term: the centre of mass never accelerates down faster than 1.25 g "
+                        "(the floor only pushes up); 0 = off")
+    g.add_argument("--gravity-g", type=float, default=0.02,
+                   help="g in body units (torso lengths / frame^2; real jumps measure 0.018-0.021)")
+    g.add_argument("--gravity-max-t", type=int, default=None, help="gravity loss only at diffusion steps t < this")
+    g.add_argument("--style-cond", action="store_true",
+                   help="condition on manner descriptors of the real window (speed, beat-band power, relocation, "
+                        "contact share; model/style.py), dropped with p = --style-drop; a control at generation")
+    g.add_argument("--style-drop", type=float, default=0.25)
     g = p.add_argument_group("augmentation (train split only)")
     g.add_argument("--extra-tools", nargs="*", choices=TOOLS, default=None,
                    help="other pose tools' keypoints of the same videos as extra training views")
@@ -133,8 +193,9 @@ def add_args(p):
     g.add_argument("--jitter-rotate", type=float, default=None, help="degrees")
     g.add_argument("--jitter-shift", type=float, default=None, help="root shift, torso lengths")
     g = p.add_argument_group("run")
-    g.add_argument("--select", choices=["fid_k", "last"], default=None,
-                   help="model.pt = the snapshot with the best val FID_k (on 128 windows) or the last one")
+    g.add_argument("--select", choices=["val_loss", "fid_k", "last"], default=None,
+                   help="model.pt = the checkpoint with the lowest validation loss (checked every --val-every), "
+                        "the best val FID_k (on 128 windows, every --sample-every) or the last one")
     g.add_argument("--log-every", type=int, default=100)
     g.add_argument("--val-every", type=int, default=2000)
     g.add_argument("--sample-every", type=int, default=10000)
@@ -156,14 +217,40 @@ def add_args(p):
 
 CFG_KEYS = ("model", "tool", "feature_set", "scale_norm", "bone_weight", "min_snr", "seq_len", "d_model", "ff",
             "layers", "heads", "dropout", "gru_hidden", "gru_layers", "diffusion_steps", "music_drop", "genre_drop",
-            "guidance", "loss_weights", "normalizer", "param", "energy_weight", "energy_smooth")
+            "guidance", "loss_weights", "normalizer", "param", "energy_weight", "energy_smooth", "beat_attn",
+            "beat_bins", "beat_range", "energy_amplitude", "energy_shape", "energy_sigma", "energy_size_norm",
+            "energy_max_t", "foot_contact", "root_accel_weight",
+            "foot_max_t", "reloc_weight", "reloc_span", "reloc_max_t", "style_cond", "style_drop", "style_stats",
+            "gravity_weight", "gravity_g", "gravity_max_t", "gravity_down_weight", "contact_head", "contact_weight")
+
+
+def needs_stance(cfg):
+    """Whether training needs the heel / toe stance labels (features/contact)."""
+    get = cfg.get if isinstance(cfg, dict) else (lambda k, d=None: getattr(cfg, k, d))
+    return bool(get("contact_head", False) or get("foot_contact", "pred") == "stance")
+
+
+def style_statistics(dataset, batch_size, batches=40, seed=0):
+    """Mean / std of the manner descriptors over random training windows (model/style.py)."""
+    from beat2body.model.style import descriptors, fit_stats
+    g = torch.Generator().manual_seed(seed)
+    loader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=True, generator=g)
+    out = []
+    for i, b in enumerate(loader):
+        if i >= batches:
+            break
+        out.append(descriptors(b["motion"].float(), b["valid"], b["root_valid"]))
+    return fit_stats(torch.cat(out))
 
 
 def build_model(cfg):
     cond_dim = audio_dim(cfg["feature_set"])
     if cfg["model"] == "diffusion":
         return EDGEDecoder(MOTION_DIM, cond_dim, cfg["n_genres"], cfg["seq_len"], cfg["d_model"], cfg["ff"],
-                           cfg["layers"], cfg["heads"], cfg["dropout"])
+                           cfg["layers"], cfg["heads"], cfg["dropout"], cfg.get("beat_attn", False),
+                           cfg.get("beat_bins", 8), cfg.get("beat_range", 2.0),
+                           style_dim=STYLE_DIM if cfg.get("style_cond") else 0,
+                           contact_head=cfg.get("contact_head", False))
     return GRUBaseline(MOTION_DIM, cond_dim, cfg["n_genres"], cfg["gru_hidden"], cfg["gru_layers"],
                        dropout=cfg["dropout"])
 
@@ -172,7 +259,14 @@ def make_diffusion(net, normalizer, cfg):
     return EDGEDiffusion(net, normalizer, cfg["diffusion_steps"], cfg["music_drop"], cfg["genre_drop"],
                          cfg["guidance"], tuple(cfg["loss_weights"]), cfg.get("bone_weight", 0.0),
                          cfg.get("min_snr", 0.0), cfg.get("param", "x0"), cfg.get("energy_weight", 0.0),
-                         cfg.get("energy_smooth", 0.0))
+                         cfg.get("energy_smooth", 0.0), cfg.get("energy_amplitude", 1.0),
+                         cfg.get("energy_shape", "square"), cfg.get("energy_sigma", 0.3),
+                         cfg.get("energy_size_norm", False), cfg.get("energy_max_t"),
+                         cfg.get("foot_contact", "pred"), cfg.get("root_accel_weight", 0.0),
+                         cfg.get("foot_max_t"), cfg.get("reloc_weight", 0.0), cfg.get("reloc_span", 15),
+                         cfg.get("reloc_max_t"), cfg.get("style_drop", 0.25), cfg.get("style_stats"),
+                         cfg.get("gravity_weight", 0.0), cfg.get("gravity_g", 0.02), cfg.get("gravity_max_t"),
+                         cfg.get("gravity_down_weight", 0.0), cfg.get("contact_weight", 0.0))
 
 
 class Generator:
@@ -185,11 +279,14 @@ class Generator:
 
     @torch.no_grad()
     def generate(self, cond, genre, first=None, guidance=None, steps=50, link_windows=False, generator=None,
-                 eta=1.0):
+                 eta=1.0, music_guidance=None, style=None):
+        """guidance: one weight for music + genre; with music_guidance: guidance = the genre weight.
+        style: (B, D) standardized manner descriptors (style-conditioned models) or None."""
         cond, genre = cond.to(self.device), genre.to(self.device)
         if self.diffusion:
             x = self.diffusion.sample(cond, genre, steps=steps, eta=eta, guidance=guidance,
-                                      link_windows=link_windows, generator=generator)
+                                      link_windows=link_windows, generator=generator, music_guidance=music_guidance,
+                                      style=None if style is None else style.to(self.device))
         else:
             if first is None:
                 first = self.normalizer.norm((self.normalizer.lo + self.normalizer.hi) / 2).expand(len(genre), -1)
@@ -226,6 +323,8 @@ def run(args):
     for k, v in RECIPES[args.recipe].items():            # recipe values for flags not given explicitly
         if getattr(args, k, None) is None:
             setattr(args, k, v)
+    if args.foot_weight is not None:
+        args.loss_weights = [*args.loss_weights[:3], args.foot_weight]
     if args.tiny:                    # small model; logging defaults only where not set explicitly
         args.d_model, args.ff, args.layers, args.heads = 64, 128, 2, 2
         for k, default, tiny in (("log_every", 100, 100), ("val_every", 2000, 500), ("sample_every", 10000, 1000)):
@@ -243,17 +342,19 @@ def run(args):
     categories = aist.load_categories()
     train = DanceClips(args.tool, "train", args.seq_len, args.feature_set, stats=stats, scale_norm=args.scale_norm,
                        extra_tools=args.extra_tools, stretch=args.stretch, scale=args.jitter_scale,
-                       rotate=args.jitter_rotate, shift=args.jitter_shift)
+                       rotate=args.jitter_rotate, shift=args.jitter_shift, foot_labels=needs_stance(args))
     tools_used = sorted({t for ts in train.tools_of.values() for t in ts})
     if set(args.extra_tools) - set(tools_used):
         print(f"[train] note: no keypoints found for {sorted(set(args.extra_tools) - set(tools_used))}; "
               f"download them with `python -m beat2body hf download --tool <tool> --parts keypoints`")
-    val = DanceClips(args.tool, "val", args.seq_len, args.feature_set, stats=stats, scale_norm=args.scale_norm)
+    val = DanceClips(args.tool, "val", args.seq_len, args.feature_set, stats=stats, scale_norm=args.scale_norm,
+                     foot_labels=needs_stance(args))
     if args.max_train_clips:
         train.rows = train.rows[:args.max_train_clips]
         train.augment = False
         val = train
     lo, hi = train.motion_range(args.normalizer)
+    args.style_stats = style_statistics(train, args.batch_size) if args.style_cond else None
     cfg = {k: getattr(args, k) for k in CFG_KEYS}
     cfg["n_genres"] = len(categories)
     model = build_model(cfg).to(dev)
@@ -270,8 +371,9 @@ def run(args):
         p_.requires_grad_(False)
     params = [p_ for p_ in model.parameters() if p_.requires_grad]
     # no weight decay on biases, norms, embeddings and learned null / position vectors
+    no_decay_keys = ("null_", "genre", "embed", "pos", "beat_bias")
     no_decay = [p_ for n_, p_ in model.named_parameters()
-                if p_.requires_grad and (p_.ndim < 2 or any(k in n_ for k in ("null_", "genre", "embed", "pos")))]
+                if p_.requires_grad and (p_.ndim < 2 or any(k in n_ for k in no_decay_keys))]
     ids = {id(p_) for p_ in no_decay}
     groups = [{"params": [p_ for p_ in params if id(p_) not in ids], "weight_decay": args.weight_decay},
               {"params": no_decay, "weight_decay": 0.0}]
@@ -330,7 +432,8 @@ def run(args):
         valid, root_valid = b["valid"].to(dev), b["root_valid"].to(dev)
         if args.model == "diffusion":
             d = gen.diffusion if net is model else make_diffusion(net, norm, cfg)
-            return d.loss(x0, cond, genre, valid, root_valid)
+            fs = b.get("foot_stance")
+            return d.loss(x0, cond, genre, valid, root_valid, None if fs is None else fs.to(dev))
         return gru_loss(net, x0, cond, genre, valid, root_valid, norm, bone_weight=args.bone_weight)
 
     def validate():
@@ -374,7 +477,12 @@ def run(args):
     sel_real = torch.stack([val[i]["motion"] for i in sel_idx])
     real_k = kinetic_features(absolute_joints(sel_real).numpy())
     k_mu, k_sd = real_k.mean(0), real_k.std(0) + 1e-8
-    best = {"fid_k": float("inf"), "step": None}
+    best = {"fid_k": float("inf"), "val_loss": float("inf"), "step": None}
+
+    def save_best():
+        for d in {args.out, live}:
+            save_bundle(os.path.join(d, "model_best.pt"), ema if ema is not None else model, cfg, lo, hi, stats,
+                        categories)
 
     def val_fid_k():
         net = ema if ema is not None else model
@@ -422,16 +530,19 @@ def run(args):
                  "steps_per_s": args.log_every / (time.time() - t0), **mem})
             t0 = time.time()
         if step % args.val_every == 0 or step == args.steps:
-            log({"val_loss": validate()})
+            vl = validate()
+            log({"val_loss": vl})
+            if args.select == "val_loss" and vl < best["val_loss"]:
+                best.update(val_loss=vl, step=step)
+                save_best()
+                log({"select": {"val_loss": vl, "best_step": step}})
         if step % args.sample_every == 0 or step == args.steps:
             log({"sample": sample_val()})
             if args.select == "fid_k":
                 fid = val_fid_k()
                 if fid < best["fid_k"]:
                     best.update(fid_k=fid, step=step)
-                    for d in {args.out, live}:
-                        save_bundle(os.path.join(d, "model_best.pt"), ema if ema is not None else model,
-                                    cfg, lo, hi, stats, categories)
+                    save_best()
                 log({"select": {"val_fid_k": fid, "best_fid_k": best["fid_k"], "best_step": best["step"]}})
         if snapshot_every and (step % snapshot_every == 0 or step == args.steps):
             os.makedirs(os.path.join(live, "snapshots"), exist_ok=True)
@@ -448,13 +559,14 @@ def run(args):
     if ema is not None:          # the plain (non-averaged) weights too, to compare
         save_bundle(os.path.join(args.out, "model_raw.pt"), model, cfg, lo, hi, stats, categories)
     best_path = os.path.join(args.out, "model_best.pt")
-    if args.select == "fid_k" and os.path.exists(best_path):
+    if args.select in ("fid_k", "val_loss") and os.path.exists(best_path):
         import shutil
         shutil.copy(best_path, os.path.join(args.out, "model.pt"))
     else:
         save_bundle(os.path.join(args.out, "model.pt"), final, cfg, lo, hi, stats, categories)
     log({"event": "done", "model": os.path.join(args.out, "model.pt"), "selected": args.select,
-         "best_step": best["step"], "best_val_fid_k": best["fid_k"] if best["step"] else None})
+         "best_step": best["step"], "best_val_fid_k": best["fid_k"] if best["fid_k"] < float("inf") else None,
+         "best_val_loss": best["val_loss"] if best["val_loss"] < float("inf") else None})
 
 
 # ---------------------------------------------------------------------------
@@ -478,6 +590,8 @@ def add_sample_args(p):
     p.add_argument("--genre", default=None, help="genre to dance (default: the video's genre)")
     p.add_argument("--seconds", type=float, default=None, help="length (default: the whole video)")
     p.add_argument("--guidance", type=float, default=None, help="guidance weight (default: the trained one)")
+    add_guidance_args(p)
+    add_postprocess_args(p)
     p.add_argument("--steps", type=int, default=50)
     p.add_argument("--eta", type=float, default=1.0, help="DDIM noise: 1 = EDGE (stochastic), 0 = deterministic")
     p.add_argument("--seed", type=int, default=0)
@@ -485,11 +599,49 @@ def add_sample_args(p):
     p.add_argument("-o", "--out", default=None)
 
 
-def generate_long(gen, bundle, video_id, seconds=None, genre_name=None, guidance=None, steps=50, seed=0, eta=1.0):
+def add_guidance_args(p):
+    p.add_argument("--music-guidance", type=float, default=None,
+                   help="separate guidance: weight of music given the genre; --guidance (or --genre-guidance) is then "
+                        "the genre weight. Default: one weight for both (EDGE)")
+    p.add_argument("--genre-guidance", type=float, default=None,
+                   help="separate guidance: genre weight (overrides --guidance; needs --music-guidance, else = it)")
+
+
+def add_postprocess_args(p):
+    p.add_argument("--foot-lock", action="store_true",
+                   help="post-process: pin feet the model marks as planted (root absorbs their motion, then leg IK)")
+    p.add_argument("--root-smooth", type=float, default=0.0,
+                   help="with --foot-lock: Gaussian smoothing of the root first (frames; 0 = off)")
+
+
+def postprocess(motion, args):
+    """Apply --foot-lock / --root-smooth to denormalized motion (T, 38) or (B, T, 38) torch -> torch."""
+    if not getattr(args, "foot_lock", False):
+        return motion
+    from beat2body.model.footlock import foot_lock
+    m = motion.cpu().numpy()
+    out = np.stack([foot_lock(x, root_smooth=args.root_smooth) for x in (m if m.ndim == 3 else m[None])])
+    return torch.from_numpy(out if m.ndim == 3 else out[0])
+
+
+def guidance_weights(args, default):
+    """(guidance, music_guidance) for Generator.generate from --guidance / --genre-guidance / --music-guidance."""
+    g = args.guidance if getattr(args, "genre_guidance", None) is None else args.genre_guidance
+    m = getattr(args, "music_guidance", None)
+    if m is not None and g is None:
+        g = default
+    if m is None and getattr(args, "genre_guidance", None) is not None:
+        m = default if args.guidance is None else args.guidance
+    return g, m
+
+
+def generate_long(gen, bundle, video_id, seconds=None, genre_name=None, guidance=None, steps=50, seed=0, eta=1.0,
+                  music_guidance=None, cond=None, style=None):
     """EDGE long-form generation for a dataset video's music -> (motion (T, 38) denormalized, n windows,
     mean overlap disagreement before the cross-fade)."""
     cfg, cats = bundle["config"], bundle["categories"]
-    cond = torch.from_numpy(music_input(video_id, cfg["feature_set"], bundle["audio_stats"]))
+    if cond is None:
+        cond = torch.from_numpy(music_input(video_id, cfg["feature_set"], bundle["audio_stats"]))
     T = len(cond) if seconds is None else min(len(cond), int(seconds * 30))
     L, half = cfg["seq_len"], cfg["seq_len"] // 2
     n = max(1, int(np.ceil((T - L) / half)) + 1) if T > L else 1
@@ -498,7 +650,11 @@ def generate_long(gen, bundle, video_id, seconds=None, genre_name=None, guidance
     windows = torch.stack([cond[i * half:i * half + L] for i in range(n)])
     genre = torch.full((n,), cats[genre_name or aist.GENRES[video_id[1:3]]], dtype=torch.long)
     g = torch.Generator(device=gen.device).manual_seed(seed)
-    m = gen.generate(windows, genre, guidance=guidance, steps=steps, link_windows=n > 1, generator=g, eta=eta)
+    if style is not None:
+        style = torch.as_tensor(style, dtype=torch.float32)
+        style = style.expand(n, -1) if style.dim() == 1 else style
+    m = gen.generate(windows, genre, guidance=guidance, steps=steps, link_windows=n > 1, generator=g, eta=eta,
+                     music_guidance=music_guidance, style=style)
     seam = (m[1:, :half] - m[:-1, half:]).abs().mean().item() if n > 1 else 0.0
     return (EDGEDiffusion.stitch(m) if n > 1 else m[0])[:T].cpu(), n, seam
 
@@ -507,8 +663,10 @@ def run_sample(args):
     gen, bundle = load_generator(args.checkpoint, args.device)
     vid = args.video_id
     genre_name = args.genre or aist.GENRES[vid[1:3]]
-    motion, n, seam = generate_long(gen, bundle, vid, args.seconds, genre_name, args.guidance, args.steps, args.seed,
-                                    args.eta)
+    gw, mw = guidance_weights(args, bundle["config"]["guidance"])
+    motion, n, seam = generate_long(gen, bundle, vid, args.seconds, genre_name, gw, args.steps, args.seed,
+                                    args.eta, mw)
+    motion = postprocess(motion, args)
     T = len(motion)
     kp = motion[:, 4:].reshape(T, -1, 2)
     path = args.out or os.path.join(os.path.dirname(os.path.abspath(args.checkpoint)), "generated", f"{vid}.npz")

@@ -156,19 +156,19 @@ the linked MP4s have the music.
 | Ballet jazz | Break |
 |---|---|
 | ![ballet jazz](gifs/model_a_ballet_jazz.gif) | ![break](gifs/model_a_break.gif) |
-| [MP4 with music](videos/model_a/dance_ballet_jazz_gJB_sFM_c01_d07_mJB1_ch02.mp4) | [MP4 with music](videos/model_a/dance_break_gBR_sFM_c01_d06_mBR2_ch16.mp4) |
+| [MP4 with music](https://huggingface.co/SizheZ03/beat2body-runs/blob/main/reports/2026-11-19_progress/videos/model_a/dance_ballet_jazz_gJB_sFM_c01_d07_mJB1_ch02.mp4) | [MP4 with music](https://huggingface.co/SizheZ03/beat2body-runs/blob/main/reports/2026-11-19_progress/videos/model_a/dance_break_gBR_sFM_c01_d06_mBR2_ch16.mp4) |
 
 | House | Krump |
 |---|---|
 | ![house](gifs/model_a_house.gif) | ![krump](gifs/model_a_krump.gif) |
-| [MP4 with music](videos/model_a/dance_house_gHO_sFM_c01_d20_mHO0_ch08.mp4) | [MP4 with music](videos/model_a/dance_krump_gKR_sFM_c01_d28_mKR2_ch03.mp4) |
+| [MP4 with music](https://huggingface.co/SizheZ03/beat2body-runs/blob/main/reports/2026-11-19_progress/videos/model_a/dance_house_gHO_sFM_c01_d20_mHO0_ch08.mp4) | [MP4 with music](https://huggingface.co/SizheZ03/beat2body-runs/blob/main/reports/2026-11-19_progress/videos/model_a/dance_krump_gKR_sFM_c01_d28_mKR2_ch03.mp4) |
 
 **Training progress, model A:** the same 5 s of val music, generated at each checkpoint (real dancer
 first). At step 6,000 the figure has drifted out of the frame.
 
 ![progress](gifs/model_a_progress.gif)
 
-[MP4](videos/model_a/progress_ballet_jazz.mp4)
+[MP4](https://huggingface.co/SizheZ03/beat2body-runs/blob/main/reports/2026-11-19_progress/videos/model_a/progress_ballet_jazz.mp4)
 
 **Before the body-size fix (first small model), house:** the generated figure is small and off to the
 side. That is the size and position drift the fix removed.
@@ -176,11 +176,11 @@ side. That is the size and position drift the fix removed.
 ![first small model](gifs/first_small_house.gif)
 
 All five genres of the first model (MP4, real vs generated):
-[break](videos/first_small/gBR_sFM_c01_d04_mBR4_real_vs_generated.mp4) ·
-[house](videos/first_small/gHO_sFM_c01_d19_mHO4_real_vs_generated.mp4) ·
-[ballet jazz](videos/first_small/gJB_sFM_c01_d07_mJB3_real_vs_generated.mp4) ·
-[krump](videos/first_small/gKR_sFM_c01_d28_mKR5_real_vs_generated.mp4) ·
-[LA hip-hop](videos/first_small/gLH_sFM_c01_d16_mLH4_real_vs_generated.mp4)
+[break](https://huggingface.co/SizheZ03/beat2body-runs/blob/main/reports/2026-11-19_progress/videos/first_small/gBR_sFM_c01_d04_mBR4_real_vs_generated.mp4) ·
+[house](https://huggingface.co/SizheZ03/beat2body-runs/blob/main/reports/2026-11-19_progress/videos/first_small/gHO_sFM_c01_d19_mHO4_real_vs_generated.mp4) ·
+[ballet jazz](https://huggingface.co/SizheZ03/beat2body-runs/blob/main/reports/2026-11-19_progress/videos/first_small/gJB_sFM_c01_d07_mJB3_real_vs_generated.mp4) ·
+[krump](https://huggingface.co/SizheZ03/beat2body-runs/blob/main/reports/2026-11-19_progress/videos/first_small/gKR_sFM_c01_d28_mKR5_real_vs_generated.mp4) ·
+[LA hip-hop](https://huggingface.co/SizheZ03/beat2body-runs/blob/main/reports/2026-11-19_progress/videos/first_small/gLH_sFM_c01_d16_mLH4_real_vs_generated.mp4)
 
 What to look for: the generated dancer keeps a steady body, poses look plausible and the genre is
 roughly visible. But the movement is smaller and slower than the real dancer's, and it rarely
@@ -254,8 +254,8 @@ paste [scripts/colab_train.py](../../scripts/colab_train.py) into one cell. Deta
 
 | Path | Contents |
 |---|---|
-| `videos/model_a/` | Model A: four 20 s dances with music, training progress video |
-| `videos/first_small/` | First small model (before the size fix): 5 genres, real vs generated |
+| [`videos/model_a/`](https://huggingface.co/SizheZ03/beat2body-runs/tree/main/reports/2026-11-19_progress/videos/model_a) | Model A: four 20 s dances with music, training progress video (on Hugging Face) |
+| [`videos/first_small/`](https://huggingface.co/SizheZ03/beat2body-runs/tree/main/reports/2026-11-19_progress/videos/first_small) | First small model (before the size fix): 5 genres, real vs generated (on Hugging Face) |
 | `gifs/` | Silent 8 s previews of the videos above |
 | `figures/` | Charts in this report |
 | `metrics/` | Evaluation results (`eval_val*.json`) and training logs (`metrics.jsonl`) of both models |

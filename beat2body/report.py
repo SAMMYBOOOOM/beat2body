@@ -117,8 +117,13 @@ def run(args):
     # 2. long dances, one song per genre
     from beat2body.data import load_meta
     per_genre = {}
-    for r in load_meta(cfg["tool"], args.split):
-        per_genre.setdefault(r["category"], r["video_id"])
+    rows = load_meta(cfg["tool"], args.split)
+    length = {}
+    for r in rows:
+        length[r["video_id"]] = max(length.get(r["video_id"], 0), int(r["end_frame"]))
+    for r in rows:                          # one video per genre, at least --seconds long
+        if length[r["video_id"]] >= args.seconds * 30:
+            per_genre.setdefault(r["category"], r["video_id"])
     for cat in list(sorted(per_genre))[:args.songs]:
         vid = per_genre[cat]
         motion, n, seam = generate_long(gen, bundle, vid, args.seconds)
