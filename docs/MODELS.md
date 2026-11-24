@@ -5,7 +5,8 @@ each run's saved config (`model.pt` → `config`, and the `start` line of `metri
 are on Hugging Face, in [SizheZ03/beat2body-runs](https://huggingface.co/SizheZ03/beat2body-runs) (private), under
 `runs/<job>/`.
 
-**Current base model: run 4.1** (decided 2026-11-20). New variants = 4.1's settings + one change.
+**Current base model: run 6.1** (decided 2026-11-23; 4.1 was the base 2026-11-20 → 11-23). New variants = 6.1's
+settings + one change.
 
 ## Shared by every run
 
@@ -61,18 +62,18 @@ with no foot planted, swing speed 0.089. "–" = not measured.
 | 2.1b.1 | `2.1b.1-large-2f9d37ca` (local name of `base-large-2f9d37ca`) | 46.9M | 2.1b at 46.9M | 23.7 / 33.5 | 1.23 / 1.39 | 0.039 | superseded by 4.1 |
 | 2.1b.2 | `e-gauss-b9934c0c` | 7.1M | 2.1b, new energy loss (weight 0.1, Gaussian σ 0.3) | **21.9 / 22.5** | 0.84 / 0.44 | 0.046 | best FIDs; too little energy |
 | 2.1b.3 | `e-square-5f731354` | 7.1M | 2.1b.2 with the squared shape | 22.7 / 23.2 | 0.87 / 0.45 | 0.051 | control |
-| **4.1** | `v41-863026e8` | 46.9M | 2.1b.1 + foot fix (`label-prev`, weight 50) | 23.5 / 25.1 | 1.16 / 1.15 | **0.020** | **base model** |
+| 4.1 | `v41-863026e8` | 46.9M | 2.1b.1 + foot fix (`label-prev`, weight 50) | 23.5 / 25.1 | 1.16 / 1.15 | 0.020 | base 2026-11-20 → 11-23 |
 | 4.2-allt | `r42-od-ddd05822` | 7.1M | 2.1b.2 + foot fix (`label-prev`, weight 50) at every noise level | 28.8 / 77.9 | 0.70 / 0.58 | 0.069 | feet frozen |
 | 4.2 | `v42-98ca09dc` | 7.1M | 2.1b.2 + foot fix (`label-prev`, weight 50) | 32.7 / 109.5 | 0.72 / 0.66 | 0.065 | feet frozen |
 | 4.3 | `v43-c03b2cc0` | 7.1M | 4.2 with aligned labels (`label`) | 31.5 / 118.8 | 0.74 / 0.71 | 0.068 | feet frozen |
 | 4.4 | `v44-5df86e13` | 46.9M | 4.1 + aligned labels + the new energy loss | 28.0 / 29.7 | **0.98 / 0.90** | 0.028 | real energy and contacts; slow swing (0.025) |
-| 4.4b | `v44b-*` | 46.9M | 4.4 with foot weight 10 and no root-acceleration loss | training | – | – | can the feet move naturally? |
-| 4.4a | `v46-1585b336` (us-west-2) | 46.9M | 4.4 without the root-acceleration loss | trained | – | – | diagnostic (was named 4.6) |
-| 4.8 | `v48-9756f3d1` | 7.1M | 4.5 without the root-acceleration loss | trained | – | – | diagnostic (small models) |
-| 6.1 | `v61-ca5ef8bf` | 46.9M | 4.1 + gravity loss | training | – | – | physics |
-| 6.2 | `v62-*` | 46.9M | 6.1 + stage C (contact head, stance-gated foot loss), foot weight 50 | queued | – | – | stage C |
-| 6.3 | `v63-17f1ca60` (us-west-2) | 46.9M | 6.2 with foot weight 10 | training | – | – | stage C, lighter feet |
-| **5.1** | `v51-da74960e` | 46.9M | 4.4 with the energy loss replaced by the style condition | trained | – | – | first of the 5.x series |
+| 4.4b | `v44b-1081efb4` | 46.9M | 4.4 with foot weight 10 and no root-acceleration loss | 20.5 / **15.7** | 0.87 / 0.52 | 0.030 | best poses; feet lift like real; low energy, root jitter 0.018, floaty jumps |
+| 4.4a | `v46-1585b336` (us-west-2) | 46.9M | 4.4 without the root-acceleration loss | 27.1 / 18.7 | 0.77 / 0.46 | 0.026 | diagnostic (was named 4.6): the root-acc. loss controls jitter (0.011 → 0.019) |
+| 4.8 | `v48-9756f3d1` | 7.1M | 4.5 without the root-acceleration loss | 25.6 / 31.6 | 0.81 / 0.44 | 0.048 | diagnostic: the root-acc. loss broke the small models |
+| **6.1** | `v61-ca5ef8bf` | 46.9M | 4.1 + gravity loss | **17.2** / 20.6 | 1.19 / 1.41 | **0.020** | **base model**: jumps fall at g, swing speed real |
+| 6.2 | `v62-5fc1a84a` | 46.9M | 6.1 + stage C (contact head, stance-gated foot loss), foot weight 50 | 18.4 / 27.4 | 1.16 / 1.33 | 0.017 | best feet and floor contact (stance drift 0.035, real-level penetration); pose FID worse; branch for stage D |
+| 6.3 | `v63-17f1ca60` (us-west-2) | 46.9M | 6.2 with foot weight 10 | 13.2 / 26.6 | 1.22 / 1.44 | 0.032 | rejected: planted feet slide (stance drift 0.115), proportions drift |
+| 5.1 | `v51-da74960e` | 46.9M | 4.4 with the energy loss replaced by the style condition | 34.2 / 35.8 | 0.60 / 0.36 | 0.030 | negative: style input ignored (real style → speed 0.51); parked |
 | 4.5 | `v45-4c119151` | 7.1M | 4.3 with foot weight 5 | 26.0 / 113.3 | 0.72 / 0.58 | 0.055 | poses still broken (not only the weight) |
 
 2.1b.2 / 2.1b.3 / 4.2–4.5 use the new energy loss (weight 0.1). The old energy loss is weight 0.25 with
@@ -105,6 +106,14 @@ Series: **4.x** = foot fix; **5.x** = manner (style) as a condition instead of s
   FIDs above 4.1's. 4.1 stays the base.
 - **Physics (2D, `reports/2026-11-22_physics/`):** real jumps fall at g; every model's jumps are floaty (42–64% of
   g). A gravity-in-flight loss is the physics-based candidate.
+- **4.4a / 4.4b:** dropping the root-acceleration loss improves pose FID (4.4 29.7 → 18.7) but doubles root jitter;
+  foot weight 10 (4.4b) then lets the feet lift like real (no foot planted 36% vs 40%) with the best pose FID (15.7).
+- **6.1 (gravity):** jumps fall at g (0.0194 = real), kinetic FID at the real-data floor, swing speed real; gravity
+  also cut 4.1's stance drift (0.081 → 0.049). Weak spots: body-size variation 0.247 and proportion drift. **Base.**
+- **Stage C (6.2 / 6.3):** heel/toe-gated foot loss + contact head. At weight 50 (6.2) the feet are the most correct
+  yet (stance drift 0.035, PFC 0.017, floor penetration at the real level) without freezing, but pose FID rises
+  20.6 → 27.4. At weight 10 (6.3) the gated penalty is too weak and planted feet slide (0.115).
+- **5.1 (style condition):** the model ignores the style input; all FIDs worse than 4.4. Parked.
 
 ## How to evaluate a new run
 
@@ -116,6 +125,15 @@ python reports/2026-11-20_feet/summarize.py          # add the run to RUNS first
 ```
 
 Always check swing speed (feet must still move between contacts) and contact share, not only FID and BeatPow.
+
+**Reading the numbers (2026-11-23).**
+- *FID floor:* real **training** dance scores FID_k 16.5 / FID_p 16.5 against the test songs (row "Real (train
+  windows)"). Models near or below it (6.1, 4.4b, 6.3) cannot be ranked by FID alone; one seed per model.
+- *Energy reference:* the training dances move faster than the test songs (speed 1.38, BeatPow 1.46 relative to
+  test). A model at ~1.2 / 1.4 matches its training data; it is not over-energetic.
+- *Style vs correctness:* how often something happens (jumps, airborne share, centre of mass outside the feet,
+  drops faster than g) describes style, not errors. Correctness = per-event measures: stance drift (sliding while
+  planted), jump fall rate ≈ g, proportion drift, root jitter, floor penetration depth.
 
 **Foot lock policy (2026-11-23).** Models trained with a foot loss (4.x, 6.x) are judged on their **raw** output; the
 hard foot lock is reported but not used to pick models. On those models it mostly pushes sliding below the real

@@ -197,12 +197,68 @@ def score(name, j, real_j, beats, z_k, z_p, contact=None):
 SUBSETS = {"all": None, "advanced": "sFM", "basic": "sBM"}
 
 
-def windows(ds, n=None):
-    """Deterministic windows of a split: absolute joints, music, genre, beat frames, contacts."""
+def windows(ds, n=None, stance=False):
+    """Deterministic windows of a split: absolute joints, music, genre, beat frames (+ heel / toe stance labels
+    (N, L, 2, 2) when stance=True and the dataset loads them)."""
     items = [ds[i] for i in range(len(ds) if n is None else min(n, len(ds)))]
     motion = torch.stack([x["motion"] for x in items])
     beats = [torch.nonzero(x["beats"]).flatten().numpy().astype(float) for x in items]
-    return motion, torch.stack([x["audio"] for x in items]), torch.stack([x["category"] for x in items]), beats
+    out = (motion, torch.stack([x["audio"] for x in items]), torch.stack([x["category"] for x in items]), beats)
+    if stance:
+        return out + (torch.stack([x["foot_stance"] for x in items]) if "foot_stance" in items[0] else None,)
+    return out
+
+
+def binary_stats(p, y):
+    """Probabilities p vs 0/1 labels y (flat, labelled entries only): accuracy, balanced accuracy, Brier score,
+    expected calibration error (10 bins), mean predicted vs labelled share."""
+    p, y = p.double(), y.double()
+    hit = ((p > 0.5).double() == y).double()
+    pos, neg = y == 1, y == 0
+    tpr = hit[pos].mean().item() if pos.any() else float("nan")
+    tnr = hit[neg].mean().item() if neg.any() else float("nan")
+    bins = torch.clamp((p * 10).long(), max=9)
+    ece = sum((bins == b).double().mean().item() * abs(p[bins == b].mean().item() - y[bins == b].mean().item())
+              for b in range(10) if (bins == b).any())
+    return {"n": int(len(y)), "accuracy": hit.mean().item(), "balanced_accuracy": (tpr + tnr) / 2,
+            "brier": ((p - y) ** 2).mean().item(), "ece": ece, "pred_share": p.mean().item(),
+            "label_share": y.mean().item()}
+
+
+@torch.no_grad()
+def contact_head_stats(gen, real_m, audio, genre, stance, generated, gen_probs, t_eval=100, batch=64, seed=0):
+    """Stage-C contact head (4 outputs: left heel, left toe, right heel, right toe).
+    real: the head on the real test windows noised to diffusion step t_eval (low noise, as in training) vs the
+    heel / toe stance labels (unknown masked), for heels, toes and both.
+    generated: the head's probabilities at the last sampling step vs the generated ankles' own speed contact
+    (a foot counts as planted for the head if max(heel, toe) > 0.5): does the head describe the generated motion?"""
+    from beat2body.data import CONTACT_THRESHOLD
+    d, dev = gen.diffusion, gen.device
+    out = {}
+    if stance is not None:
+        g = torch.Generator(device="cpu").manual_seed(seed)
+        probs = []
+        for s in range(0, len(real_m), batch):
+            x0 = gen.normalizer.norm(real_m[s:s + batch].to(dev))
+            t = torch.full((len(x0),), t_eval, device=dev, dtype=torch.long)
+            x_t = d.q_sample(x0, t, torch.randn(x0.shape, generator=g).to(dev))
+            keep = torch.ones(len(x0), dtype=torch.bool, device=dev)
+            gen.model(x_t, audio[s:s + batch].to(dev), t, genre[s:s + batch].to(dev), keep)
+            probs.append(torch.sigmoid(gen.model.contact_logits().float()).cpu())
+        p = torch.cat(probs)                                                      # (N, L, 4)
+        y = stance.reshape(*stance.shape[:2], 4).long()
+        out["real"] = {"t": t_eval}
+        for name, ch in (("all", [0, 1, 2, 3]), ("heel", [0, 2]), ("toe", [1, 3])):
+            pp, yy = p[..., ch], y[..., ch]
+            m = yy >= 0
+            out["real"][name] = binary_stats(pp[m], yy[m])
+    if gen_probs is not None:
+        ank = torch.from_numpy(generated[:, :, 15:17]).float()                   # (N, L, 2 feet, 2)
+        v = (ank[:, 1:] - ank[:, :-1]).norm(dim=-1)
+        planted = torch.cat([v[:, :1], v], 1) < CONTACT_THRESHOLD                # step t-1 -> t, frame 0 = frame 1
+        p = gen_probs.reshape(*gen_probs.shape[:2], 2, 2).amax(-1)               # (N, L, 2 feet)
+        out["generated"] = binary_stats(p.flatten(), planted.flatten().long())
+    return out
 
 
 def style_inputs(gen, cfg, mode, real_m, genre, train_m, train_genre):
@@ -236,7 +292,9 @@ def run(args):
         if tag:
             ds.rows = [r for r in ds.rows if f"_{tag}_" in r["video_id"]]
         return ds
-    real_m, audio, genre, beats = windows(subset(DanceClips(cfg["tool"], args.split, **kw)), args.max_windows)
+    head = getattr(gen.model, "contact_head", None) is not None and gen.diffusion is not None
+    real_m, audio, genre, beats, stance = windows(subset(DanceClips(cfg["tool"], args.split, foot_labels=head, **kw)),
+                                                  args.max_windows, stance=True)
     train_m, _, train_genre, train_beats = windows(subset(DanceClips(cfg["tool"], "train", **kw)), len(real_m))
     real = absolute_joints(real_m).numpy()
     z_k = (kinetic_features(real).mean(0), kinetic_features(real).std(0) + 1e-8)
@@ -244,7 +302,7 @@ def run(args):
 
     style = style_inputs(gen, cfg, getattr(args, "style", "none"), real_m, genre, train_m, train_genre)
     torch.manual_seed(args.seed)
-    out = []
+    out, gen_probs = [], []
     import time
     t0 = time.time()
     for s in range(0, len(audio), args.batch_size):
@@ -253,6 +311,8 @@ def run(args):
                                 first=gen.normalizer.norm(real_m[s:s + args.batch_size, 0].to(dev)),
                                 guidance=gw, steps=args.steps, eta=args.eta, music_guidance=mw,
                                 style=None if style is None else style[s:s + args.batch_size]).cpu())
+        if head and gen.diffusion.last_contact is not None:
+            gen_probs.append(gen.diffusion.last_contact.cpu())
     from beat2body.train import postprocess
     gen_m = postprocess(torch.cat(out), args)
     generated = absolute_joints(gen_m).numpy()
@@ -301,6 +361,22 @@ def run(args):
     for name, v in phys.items():
         print(f"{name:12s}{v['flights']:9d}{v['flight_acc_y_median']:9.4f}{v['flight_acc_x_abs_median']:9.4f}"
               f"{100 * v['acc_down_over_g']:8.2f}%")
+    chead = None
+    if head:
+        chead = contact_head_stats(gen, real_m, audio, genre, stance, generated,
+                                   torch.cat(gen_probs) if len(gen_probs) * args.batch_size >= len(audio) else None,
+                                   seed=args.seed)
+        print("\nContact head (stage C): real = the head on real windows (noise step "
+              f"{chead.get('real', {}).get('t', '-')}) vs heel / toe labels; generated = the head vs the generated"
+              " ankles' speed contact.\nacc = accuracy, bal = balanced accuracy, brier = mean squared error,"
+              " ece = calibration error, pred / label = predicted / labelled planted share")
+        print(f"{'':16s}" + "".join(f"{h:>9s}" for h in ("n", "acc", "bal", "brier", "ece", "pred", "label")))
+        lines = [(f"real {k}", v) for k, v in chead.get("real", {}).items() if k != "t"]
+        lines += [("generated", chead["generated"])] if "generated" in chead else []
+        for name, v in lines:
+            print(f"{name:16s}{v['n']:9d}" + "".join(f"{v[k]:9.3f}" for k in ("accuracy", "balanced_accuracy",
+                                                                                "brier", "ece", "pred_share",
+                                                                                "label_share")))
     drift = None
     if args.long_seconds > 0:
         g, r, n = long_drift(gen, bundle, args.split, args.long_seconds, args.seed, gw, mw, args)
@@ -315,5 +391,5 @@ def run(args):
         json.dump({"split": args.split, "subset": args.subset, "windows": len(real), "guidance": gw,
                    "music_guidance": mw, "rows": rows, "long_drift": drift,
                    "feet": feet, "foot_lock": bool(args.foot_lock), "root_smooth": args.root_smooth,
-                   "style": getattr(args, "style", "none"), "physics": phys}, f, indent=1)
+                   "style": getattr(args, "style", "none"), "physics": phys, "contact_head": chead}, f, indent=1)
     print(f"wrote {path}")

@@ -9,6 +9,8 @@ Hugging Face token with write access to SizheZ03/beat2body-runs. The script:
   4. for every entry whose result runs/<job>/eval_test_<tag>.json is not in the repo yet: downloads the checkpoint,
      runs `python -m beat2body evaluate` on the held-out test songs (seed 0, 50 DDIM steps, eta 1, guidance 2,
      20 s long dances), and uploads the result JSON and the printed log next to the checkpoint
+  5. for every video set in evals/videos.json not on the repo yet: runs scripts/make_videos.py (real | model | ...
+     on the 10 test songs, with music) and uploads the mp4 files to the set's "out" folder
 Run the cell again whenever new entries are queued; finished entries are skipped. Nothing runs on a local machine.
 
 A runtime reset (changing the runtime type, a disconnect, the idle timeout) empties /content. So the data (one tar
@@ -106,7 +108,11 @@ tok = token()
 if not tok:
     raise SystemExit("add a Colab secret HF_TOKEN (write access to SizheZ03/beat2body-runs)")
 api = HfApi(token=tok)
-queue = json.load(open(hf_hub_download(HF_REPO, "evals/queue.json", token=tok, force_download=True)))
+# heel / toe stance labels (7 MB, private runs repo): the contact-head evaluation of stage-C models uses them
+if not os.path.isdir(os.path.join(REPO, "2d", "features", "contact")):
+    from huggingface_hub import snapshot_download  # noqa: E402
+    snapshot_download(HF_REPO, allow_patterns=["2d/features/contact/*"], token=tok, local_dir=REPO)
+queue =json.load(open(hf_hub_download(HF_REPO, "evals/queue.json", token=tok, force_download=True)))
 have = set(api.list_repo_files(HF_REPO))
 todo = [e for e in queue if f"runs/{e['job']}/eval_test_{e['tag']}.json" not in have]
 print(f"\n{len(queue)} queued evaluations, {len(todo)} to run: {[e['name'] + ' ' + e['tag'] for e in todo]}\n")
@@ -141,3 +147,38 @@ for e in todo:
     print(f"== uploaded {e['name']} {e['tag']}", flush=True)
     ok.append(f"{e['name']} {e['tag']}")
 print(f"\nfinished: {len(ok)} uploaded {ok}; {len(failed)} FAILED {failed}")
+
+# 5. videos: evals/videos.json lists {"name": "6.x", "out": "reports/<folder>/videos",
+#    "models": {"6.1": "runs/<job>/model.pt", ...}}; done when <out> on Hugging Face holds the 10 test-song videos.
+#    The music comes from the 10 raw test videos kept in media/test_videos/ (Colab has ffmpeg, the Mac may not).
+try:
+    vqueue = json.load(open(hf_hub_download(HF_REPO, "evals/videos.json", token=tok, force_download=True)))
+except Exception:                                             # noqa: BLE001  (no video queue)
+    vqueue = []
+vtodo = [v for v in vqueue if sum(f.startswith(v["out"] + "/") and f.endswith(".mp4") for f in have) < 10]
+print(f"\n{len(vqueue)} queued video sets, {len(vtodo)} to make: {[v['name'] for v in vtodo]}\n")
+for v in vtodo:
+    from huggingface_hub import snapshot_download  # noqa: E402
+    snapshot_download(HF_REPO, allow_patterns=["media/test_videos/*"], token=tok, local_dir="/content/hf_media")
+    src = "/content/hf_media/media/test_videos"
+    for cat in os.listdir(src):
+        os.makedirs(os.path.join(REPO, "2d", "raw_video", cat), exist_ok=True)
+        for f in os.listdir(os.path.join(src, cat)):
+            dst = os.path.join(REPO, "2d", "raw_video", cat, f)
+            if not os.path.exists(dst):
+                os.symlink(os.path.join(src, cat, f), dst)
+    args = []
+    for label, rel in v["models"].items():
+        root = CACHE if USE_DRIVE else "/content/hf"
+        ck = os.path.join(root, rel)
+        if not os.path.exists(ck):
+            ck = hf_hub_download(HF_REPO, rel, token=tok, local_dir=root)
+        args += ["--model", f"{label}={ck}"]
+    out = os.path.join(REPO, v["out"])
+    rc = sh([sys.executable, "scripts/make_videos.py", "--out", out, "--device", "cuda", *args], check=False)
+    if rc != 0:
+        print(f"!! videos {v['name']} failed", flush=True)
+        continue
+    api.upload_folder(folder_path=out, path_in_repo=v["out"], repo_id=HF_REPO, allow_patterns=["*.mp4"],
+                      commit_message=f"Videos {v['name']} (Colab)")
+    print(f"== uploaded videos {v['name']} -> {v['out']}", flush=True)

@@ -56,3 +56,31 @@ def test_sampling_keeps_the_contact_probabilities():
     d.sample(torch.randn(2, 60, 37), torch.tensor([1, 2]), steps=3)
     assert d.last_contact is not None and d.last_contact.shape == (2, 60, 4)
     assert (d.last_contact >= 0).all() and (d.last_contact <= 1).all()
+
+
+def test_binary_stats_perfect_and_calibrated():
+    from beat2body.evaluate import binary_stats
+    y = torch.tensor([1, 1, 0, 0, 1, 0])
+    s = binary_stats(y.float(), y)
+    assert s["accuracy"] == 1 and s["balanced_accuracy"] == 1 and s["brier"] == 0 and s["ece"] == 0
+    s = binary_stats(torch.full((6,), 0.5), y)                       # always 0.5: calibrated on a 50 % share
+    assert abs(s["ece"]) < 1e-9 and s["balanced_accuracy"] == 0.5
+
+
+def test_contact_head_stats_on_real_and_generated_windows():
+    from types import SimpleNamespace
+
+    import numpy as np
+
+    from beat2body.evaluate import contact_head_stats
+    net = _net().eval()
+    d = EDGEDiffusion(net, Normalizer(-3 * torch.ones(38), 3 * torch.ones(38)))
+    gen = SimpleNamespace(diffusion=d, device="cpu", normalizer=d.normalizer, model=net)
+    m = _step_motion()[None].repeat(2, 1, 1)
+    st = _stance(m[0]).repeat(2, 1, 1, 1)
+    probs = torch.rand(2, 60, 4)
+    out = contact_head_stats(gen, m, torch.randn(2, 60, 37), torch.tensor([1, 2]), st,
+                             np.random.default_rng(0).standard_normal((2, 60, 17, 2)), probs, t_eval=10, batch=1)
+    assert set(out["real"]) == {"t", "all", "heel", "toe"}
+    assert out["real"]["heel"]["n"] == int((st[..., 0] >= 0).sum())       # unknown frames are masked
+    assert 0 <= out["generated"]["accuracy"] <= 1 and out["generated"]["n"] == 2 * 60 * 2
