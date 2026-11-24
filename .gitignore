@@ -170,3 +170,5 @@ results/**/*.npz
 *.rej
 .DS_Store
 dir.txt
+# the team notebook holds no tokens (it reads the Colab secret HF_TOKEN)
+!notebooks/beat2body_team.ipynb

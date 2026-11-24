@@ -11,18 +11,19 @@ now are 4.1, 4.4b, 6.1, 6.2 and 6.3.
 
 1. **Hugging Face access.** You need write access to `SizheZ03/beat2body-runs`: ask Sizhe. Then create a
    token at <https://huggingface.co/settings/tokens> with write access to that repo.
-2. **Colab.** Open a new notebook at <https://colab.research.google.com>.
+2. **Colab.** Open the team notebook: **[open in Colab](https://colab.research.google.com/github/novaz03/beat2body/blob/claude/relaxed-knuth-fc6tqf/notebooks/beat2body_team.ipynb)**
+   ([`notebooks/beat2body_team.ipynb`](../notebooks/beat2body_team.ipynb)). It has one cell per task below. Use
+   File → Save a copy in Drive to keep your own copy.
    - Runtime → Change runtime type → **GPU** (T4 works; L4 or A100 is faster).
    - Key icon on the left → add a secret named `HF_TOKEN` with your token, and allow notebook access.
    - **Never paste a token into a notebook cell or a file**: notebooks get shared and committed.
 
 ## Task A: run the evaluation queue
 
-1. Copy the whole of [`scripts/colab_eval.py`](../scripts/colab_eval.py) into **one** Colab cell. Take the
-   current version each time: the cell does not update itself.
-2. Set `WORKER = "yourname"` near the top of the cell.
-3. Run the cell. The first time, allow Google Drive access: the data (~150 MB) and checkpoints are cached there,
-   so later runs start faster.
+1. In the notebook, set `WORKER = "yourname"` in the **Setup** cell and run it.
+2. Run the **Task A** cell. It fetches the latest [`scripts/colab_eval.py`](../scripts/colab_eval.py) from GitHub
+   each time, so you never run an old copy. The first time, allow Google Drive access: the data (~150 MB) and
+   checkpoints are cached there, so later runs start faster.
 
 What it does: it reads the queue `evals/queue.json`, skips finished entries, and **claims** each entry before
 running it. Several people can run the cell at the same time, and each entry is run once. A claim older than 3 hours
@@ -41,6 +42,8 @@ A failed evaluation uploads its log as `eval_test_<tag>.failed.log`. Send Sizhe 
 Then the video queue runs, if there is one. The videos come out as `reports/<folder>/videos/*.mp4` on Hugging Face.
 
 ## Task B: per-genre analysis (after Task A; no GPU)
+
+The notebook's **Task B** cell does the steps below and shows the tables. To run them on your own machine instead:
 
 The question: which genres are hardest for the models (is ballet jazz harder?), and where does each model fail?
 
@@ -68,6 +71,8 @@ How to read the tables:
   lowers on-screen sliding and jump measures without the motion being better.
 
 ## Task C: video review (no GPU)
+
+The notebook's **Task C** cell plays one genre's video in the browser: set `GENRE` first. To download them instead:
 
 The videos are in `reports/2026-11-23_v6/videos/` on Hugging Face. There is one per test song (genre), 20 s with
 music: the real dancer, then 6.1, 6.2 and 6.3. The panels flash yellow on beats.
